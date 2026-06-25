@@ -6,6 +6,7 @@ Jett is a filesystem-first framework for production agents on Cencori.
 
 - [Getting Started](getting-started.md)
 - [Project Layout](project-layout.md)
+- [Subagents](subagents.md)
 
 ## Authoring
 

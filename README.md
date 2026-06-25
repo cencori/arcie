@@ -61,6 +61,34 @@ export default defineTool({
 });
 ```
 
+## Subagents
+
+Drop a specialist under `agent/subagents/<id>/` and the orchestrator can delegate
+a focused subtask to it. Each subagent is a full agent with its own instructions
+and tools, and **must declare a `description`** so the model knows when to use it.
+
+```
+agent/subagents/researcher/
+├── agent.ts          # defineAgent({ model, description })  ← description required
+├── instructions.md   # optional
+└── tools/            # optional — the subagent's own tools
+```
+
+```ts
+// agent/subagents/researcher/agent.ts
+import { defineAgent } from "zett";
+
+export default defineAgent({
+  model: "claude-sonnet-4-5",
+  description: "Investigate ambiguous questions before the parent agent responds.",
+});
+```
+
+The orchestrator sees each subagent as a tool it can call with a `message` (plus an
+optional `outputSchema` for structured results). Every call runs in a **fresh,
+isolated session** — the subagent never inherits the parent's history, so the main
+agent's context stays lean. See [docs/subagents.md](docs/subagents.md).
+
 ## License
 
 MIT
