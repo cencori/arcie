@@ -37,8 +37,8 @@
     }
   },
   "scripts": {
-    "build": "tsup",
-    "dev": "tsup --watch",
+    "build": "node api.js && tsup",
+    "dev": "node api.js && tsup --watch",
     "typecheck": "tsc -p tsconfig.build.json --noEmit",
     "prepublishOnly": "npm run build",
     "test": "vitest run",
