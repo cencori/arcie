@@ -2,7 +2,10 @@ node_modules
 dist
 .env
 .env.local
+temp_auto_push.bat
 *.tsbuildinfo
 .next
 next-env.d.ts
 package-lock.json
+.gitignore
+branch_structure.json
