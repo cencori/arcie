@@ -32,7 +32,7 @@ agent/subagents/researcher/
 
 ```ts
 // agent/subagents/researcher/agent.ts
-import { defineAgent } from "zett";
+import { defineAgent } from "arcie";
 
 export default defineAgent({
   model: "claude-sonnet-4-5",
@@ -51,7 +51,7 @@ orchestrator decides when to delegate. Leaving it out is a hard error at load ti
 Subagent "researcher" must declare a description in agent.ts
 ```
 
-A subagent directory with no `agent.ts` is reported by `zett dev` / `zett build` as
+A subagent directory with no `agent.ts` is reported by `arcie dev` / `arcie build` as
 `SUBAGENT_MISSING_CONFIG`.
 
 ## Isolation
@@ -89,7 +89,7 @@ Each delegation emits two control-plane events in the parent's stream:
 
 Authoring and loading work today: subagents are discovered, validated (including the
 `description` requirement), and loaded into the agent manifest with their own
-instructions and tools — `zett build` lists them under `subagents` in the manifest.
+instructions and tools — `arcie build` lists them under `subagents` in the manifest.
 The runtime orchestration loop — the model invoking a subagent, spawning the isolated
 child session, and feeding the result back into the parent turn — is being wired
 through the Cencori Sessions API.

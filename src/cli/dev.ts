@@ -4,7 +4,6 @@ import { loadAgent } from "../loader";
 import { discoverAgent } from "../discover/index";
 import { streamAgent } from "../runner/index";
 import { showBanner } from "./banner";
-import { encodeEvents, type StreamEvent } from "../protocol/events";
 
 export async function devCommand(options: {
   port: string;
@@ -62,10 +61,7 @@ export async function devCommand(options: {
           res.end();
         } else {
           res.writeHead(200, { "Content-Type": "application/json" });
-          for await (const event of streamAgent(agentDirPath, message)) {}
-          const result = await loadAgent(agentDirPath).then((a) =>
-            a.manifest.config
-          );
+          for await (const _event of streamAgent(agentDirPath, message)) {}
           res.end(JSON.stringify({ status: "ok" }));
         }
       } catch (err) {

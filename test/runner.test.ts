@@ -24,6 +24,29 @@ beforeAll(async () => {
       return;
     }
 
+    if (req.method === "POST" && /^\/sessions\/[^/]+\/approve$/.test(req.url ?? "")) {
+      if (body.includes("boom")) {
+        res.writeHead(500);
+        res.end("approve failed");
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      const input = JSON.parse(body || "{}").tool_results?.[0]?.output ?? "";
+      const full = "Echo: " + JSON.stringify(input);
+      res.write("event: turn.started\n");
+      res.write(`data: ${JSON.stringify({ turn_number: 1, input_text: "" })}\n\n`);
+      for (const delta of ["Echo: ", JSON.stringify(input)]) {
+        res.write("event: output_text.delta\n");
+        res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+      }
+      res.write("event: turn.completed\n");
+      const turnCompletedData = { output: { output: [{ type: "message", content: [{ type: "output_text", text: full }] }] } };
+      res.write(`data: ${JSON.stringify(turnCompletedData)}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return;
+    }
+
     if (req.method === "POST" && /^\/sessions\/[^/]+\/turns$/.test(req.url ?? "")) {
       const input = JSON.parse(body || "{}").input;
       if (typeof input === "string" && input.includes("boom")) {
@@ -31,14 +54,30 @@ beforeAll(async () => {
         res.end("upstream exploded");
         return;
       }
+      const isSubagent = req.url?.includes("sub.");
+      const triggerSubagent = typeof input === "string" && input.includes("delegate");
       res.writeHead(200, { "Content-Type": "text/event-stream" });
+      const turnNumber = 1;
       const full = "Echo: " + JSON.stringify(input);
+      res.write("event: turn.started\n");
+      res.write(`data: ${JSON.stringify({ turn_number: turnNumber, input_text: input })}\n\n`);
       for (const delta of ["Echo: ", JSON.stringify(input)]) {
-        res.write("event: message.appended\n");
-        res.write(`data: ${JSON.stringify({ type: "message.appended", delta })}\n\n`);
+        res.write("event: output_text.delta\n");
+        res.write(`data: ${JSON.stringify({ delta })}\n\n`);
       }
-      res.write("event: message.completed\n");
-      res.write(`data: ${JSON.stringify({ type: "message.completed", text: full })}\n\n`);
+      if (isSubagent || !triggerSubagent) {
+        res.write("event: turn.completed\n");
+        const turnCompletedData = { output: { output: [{ type: "message", content: [{ type: "output_text", text: full }] }] } };
+        res.write(`data: ${JSON.stringify(turnCompletedData)}\n\n`);
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
+      }
+      res.write("event: tool_call.started\n");
+      const toolCallPayload = { tool: "researcher", arguments: { query: input }, action_id: "act_sub_1" };
+      res.write(`data: ${JSON.stringify(toolCallPayload)}\n\n`);
+      res.write("event: turn.paused\n");
+      res.write("data: {}\n\n");
       res.write("data: [DONE]\n\n");
       res.end();
       return;
@@ -70,8 +109,11 @@ describe("runAgent", () => {
       "session.started",
       "turn.started",
       "message.received",
-      "step.completed",
+      "step.started",
+      "message.appended",
+      "message.appended",
       "message.completed",
+      "step.completed",
       "turn.completed",
       "session.waiting",
     ]);
@@ -91,6 +133,41 @@ describe("runAgent", () => {
   it("requires an API key", async () => {
     vi.stubEnv("CENCORI_API_KEY", "");
     await expect(runAgent(FIXTURE, "hi", { endpoint })).rejects.toThrow(/API key required/);
+  });
+});
+
+describe("subagent dispatch", () => {
+  it("emits subagent.called and subagent.completed when a tool matches a subagent", async () => {
+    const r = await runAgent(FIXTURE, "delegate research", opts());
+    const types = r.events.map((e) => e.type);
+    expect(types).toContain("subagent.called");
+    expect(types).toContain("subagent.completed");
+    const calledEvent = r.events.find((e) => e.type === "subagent.called");
+    expect(calledEvent?.data.name).toBe("researcher");
+  });
+
+  it("collects subagent output as a tool result", async () => {
+    const r = await runAgent(FIXTURE, "delegate research", opts());
+    const completedEvent = r.events.find((e) => e.type === "subagent.completed");
+    expect(completedEvent?.data.output).toBeTruthy();
+  });
+});
+
+describe("tool approval", () => {
+  it("executes a tool normally when needsApproval is not set", async () => {
+    const r = await runAgent(FIXTURE, "hi", opts());
+    const toolEvents = r.events.filter((e) => e.type === "tool.completed");
+    expect(toolEvents).toHaveLength(0);
+  });
+
+  it("emits needs_approval for tools requiring approval by running against unknown tool", async () => {
+    const events: string[] = [];
+    await runAgent(FIXTURE, "delegate approval-required", {
+      ...opts(),
+      onEvent: (e) => events.push(e.type),
+    });
+    expect(events).toContain("tool.started");
+    expect(events).toContain("tool.completed");
   });
 });
 

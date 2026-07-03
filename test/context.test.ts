@@ -39,7 +39,7 @@ describe("session/turn singletons", () => {
   it("default to null until set", () => {
     // fresh keys are unaffected by other tests since these are module globals
     const sessionBefore = getSession();
-    expect(sessionBefore === null || typeof sessionBefore === "object").toBe(true);
+    expect(sessionBefore).toBeNull();
   });
 
   it("round-trips session and turn", () => {

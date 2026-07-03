@@ -1,12 +1,13 @@
-import { zodToJsonSchema } from "zod-to-json-schema";
 import { loadAgent, type LoadedAgent } from "../loader";
-import { discoverAgent } from "../discover/index";
-import type { TurnContext, ToolCallContext } from "../types";
+import { toModelOutput } from "../tools/index";
+import { Memory } from "../memory/index";
+import type { TurnContext, ToolCallContext, ApprovalStrategy } from "../types";
 import {
   createSessionStarted, createTurnStarted, createMessageReceived,
   createMessageAppended, createMessageCompleted, createStepStarted,
   createStepCompleted, createSessionWaiting, createTurnCompleted,
   createSessionCompleted, createToolCallStarted, createToolCallCompleted,
+  createSubagentCalled, createSubagentCompleted,
   type StreamEvent,
 } from "../protocol/events";
 
@@ -15,6 +16,9 @@ export interface RunOptions {
   apiKey?: string;
   maxTurns?: number;
   sessionId?: string;
+  resourceId?: string;
+  threadId?: string;
+  memoryStore?: import("../memory/index").MemoryStore;
   onEvent?: (event: StreamEvent) => void;
 }
 
@@ -26,6 +30,107 @@ export interface RunResult {
 }
 
 const DEFAULT_ENDPOINT = "https://cencori.com/v1";
+
+async function createChildSession(
+  endpoint: string,
+  apiKey: string,
+  agent: LoadedAgent,
+  subagentId: string,
+): Promise<string> {
+  const sub = agent.manifest.subagents[subagentId];
+  const res = await fetch(`${endpoint}/sessions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      agent_id: `${agent.manifest.config.name ?? "unnamed"}.${subagentId}`,
+      metadata: {
+        model: sub.config.model,
+        instructions: sub.instructions,
+      },
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Subagent session error (${res.status}): ${err}`);
+  }
+  const data = await res.json() as { id: string };
+  return data.id;
+}
+
+async function executeSubagent(
+  endpoint: string,
+  apiKey: string,
+  agent: LoadedAgent,
+  subagentId: string,
+  input: unknown,
+  childSessionId?: string,
+): Promise<string> {
+  const sub = agent.manifest.subagents[subagentId];
+  childSessionId ??= await createChildSession(endpoint, apiKey, agent, subagentId);
+  const inputStr = typeof input === "string" ? input : JSON.stringify(input);
+  const tools = Object.entries(sub.tools).map(([name, tool]) => ({
+    name,
+    description: tool.description,
+    input_schema: {},
+    type: "function" as const,
+  }));
+
+  const res = await fetch(`${endpoint}/sessions/${childSessionId}/turns`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: sub.config.model,
+      input: inputStr,
+      instructions: sub.instructions,
+      tools: tools.length > 0 ? tools : undefined,
+      stream: true,
+      pause_on_tool_calls: false,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Subagent turn error (${res.status}): ${err}`);
+  }
+
+  let output = "";
+  let currentEvent = "";
+  const reader = res.body?.getReader();
+  if (reader) {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (line.startsWith("event: ")) {
+          currentEvent = line.slice(7);
+        } else if (line.startsWith("data: ")) {
+          const payload = line.slice(6);
+          if (payload === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(payload);
+            const eventType = currentEvent || parsed.type;
+            if (eventType === "message.appended" && parsed.delta) {
+              output += parsed.delta;
+            }
+          } catch {}
+        }
+      }
+    }
+  }
+
+  return output || inputStr;
+}
 
 function headers(apiKey: string, agent: LoadedAgent): Record<string, string> {
   return {
@@ -59,17 +164,6 @@ async function createSession(
   }
   const data = await res.json() as { id: string };
   return data.id;
-}
-
-function buildToolDefinitions(agent: LoadedAgent) {
-  return Object.entries(agent.manifest.tools).map(([name, tool]) => ({
-    name,
-    description: tool.description,
-    input_schema: tool.inputSchema
-      ? zodToJsonSchema(tool.inputSchema, { target: "openApi3" })
-      : undefined,
-    type: "function" as const,
-  }));
 }
 
 export async function runAgent(
@@ -106,11 +200,15 @@ export async function runAgent(
         (ev): ev is ReturnType<typeof createToolCallCompleted> =>
           ev.type === "tool.completed" && ev.data.callId === e.data.callId
       );
+      const error = completed?.data.status === "failed" || completed?.data.status === "rejected"
+        ? new Error(completed.data.error?.message ?? "Tool failed")
+        : undefined;
       toolCalls.push({
         tool: e.data.name,
         input: e.data.input,
         output: completed?.data.output,
         durationMs: undefined,
+        ...(error ? { error } : {}),
       });
     }
   }
@@ -228,7 +326,7 @@ async function* readTurnSSE(
               } else if (Array.isArray(out?.output)) {
                 for (const item of out.output) {
                   if (item.type === "message") {
-                    const tc = item.content?.find((c: any) => c.type === "output_text");
+                    const tc = item.content?.find((c: { type: string; text?: string }) => c.type === "output_text");
                     if (tc?.text) finalText = tc.text;
                   }
                 }
@@ -278,8 +376,26 @@ export async function* streamAgent(
 
   const sessionId = options.sessionId || await createSession(endpoint, apiKey, agent);
   const model = agent.manifest.config.model;
-  const instructions = agent.manifest.instructions;
-  const tools = buildToolDefinitions(agent);
+
+  const memory = agent.manifest.session?.memory
+    ? new Memory(agent.manifest.session.memory, {
+        store: options.memoryStore,
+        resourceId: options.resourceId,
+        threadId: options.threadId,
+      })
+    : null;
+  const memoryTools = memory ? memory.getToolDefinitions() : {};
+  const allTools = { ...agent.manifest.tools, ...memoryTools };
+  const tools = Object.entries(allTools).map(([name, tool]) =>
+    toModelOutput(name, tool)
+  );
+  const memoryContext = memory ? await memory.getInputContext() : "";
+  const memoryInstruction = memory ? memory.getSystemInstruction() : "";
+  const instructions = [
+    agent.manifest.instructions,
+    memoryInstruction,
+    memoryContext,
+  ].filter(Boolean).join("\n\n");
 
   yield createSessionStarted(sessionId, {
     agentId: agent.manifest.config.name ?? "unnamed",
@@ -310,6 +426,10 @@ export async function* streamAgent(
     throw new Error(`Cencori Sessions API error (${response.status}): ${error}`);
   }
 
+  // Track tools approved via "once" strategy within this session
+  const approvedTools = new Set<string>();
+  const allToolCalls: { tool: string; input: unknown; output: unknown }[] = [];
+
   // Tool call loop: pause → execute → approve → resume → repeat
   for (let loop = 0; loop < maxToolLoops; loop++) {
     const eventGen = readTurnSSE(response, turnId);
@@ -322,33 +442,75 @@ export async function* streamAgent(
     }
     result = iter.value;
 
-    if (result.status === "completed") break;
+    if (result.status === "completed") {
+      if (memory) {
+        await memory.recordTurn(input, result.text, allToolCalls.length > 0 ? allToolCalls : undefined);
+      }
+      break;
+    }
 
     if (result.status !== "paused" || result.toolCalls.length === 0) break;
 
     const toolResults: Array<{ action_id: string; output: string }> = [];
+    let needsUserApproval = false;
 
     for (const tc of result.toolCalls) {
-      const toolDef = agent.manifest.tools[tc.name];
+      const toolDef = agent.manifest.tools[tc.name] ?? memoryTools[tc.name];
+      const subDef = agent.manifest.subagents[tc.name];
+      const strategy: ApprovalStrategy | undefined = toolDef?.needsApproval;
+
+      if (strategy === "always" || (strategy === "once" && !approvedTools.has(tc.name))) {
+        needsUserApproval = true;
+        yield createToolCallCompleted(tc.name, null, tc.actionId, "pending",
+          { code: "needs_approval", message: `Tool "${tc.name}" requires approval` }, 1, 0, turnId);
+        continue;
+      }
+
+      if (strategy === "once") approvedTools.add(tc.name);
+
       if (toolDef?.execute) {
         try {
           const output = await toolDef.execute(tc.args);
           const outputStr = typeof output === "string" ? output : JSON.stringify(output);
           yield createToolCallCompleted(tc.name, outputStr, tc.actionId, "completed", undefined, 1, 0, turnId);
           toolResults.push({ action_id: tc.actionId, output: outputStr });
+          allToolCalls.push({ tool: tc.name, input: tc.args, output });
         } catch (err) {
           const msg = err instanceof Error ? err.message : "Tool execution failed";
           yield createToolCallCompleted(tc.name, msg, tc.actionId, "failed", { code: "execution_error", message: msg }, 1, 0, turnId);
           toolResults.push({ action_id: tc.actionId, output: `Error: ${msg}` });
+          allToolCalls.push({ tool: tc.name, input: tc.args, output: `Error: ${msg}` });
+        }
+      } else if (subDef) {
+        const callId = tc.actionId;
+        try {
+          const childSessionId = await createChildSession(endpoint, apiKey, agent, tc.name);
+          yield createSubagentCalled(tc.name, callId, childSessionId, turnId);
+          const output = await executeSubagent(endpoint, apiKey, agent, tc.name, tc.args, childSessionId);
+          yield createSubagentCompleted(tc.name, callId, output);
+          yield createToolCallCompleted(tc.name, output, tc.actionId, "completed", undefined, 1, 0, turnId);
+          toolResults.push({ action_id: tc.actionId, output });
+          allToolCalls.push({ tool: tc.name, input: tc.args, output });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Subagent execution failed";
+          yield createSubagentCompleted(tc.name, callId, `Error: ${msg}`);
+          yield createToolCallCompleted(tc.name, msg, tc.actionId, "failed", { code: "execution_error", message: msg }, 1, 0, turnId);
+          toolResults.push({ action_id: tc.actionId, output: `Error: ${msg}` });
+          allToolCalls.push({ tool: tc.name, input: tc.args, output: `Error: ${msg}` });
         }
       } else {
         yield createToolCallCompleted(tc.name, "Tool not found in agent manifest", tc.actionId, "failed", { code: "tool_not_found", message: `Tool "${tc.name}" not defined in agent` }, 1, 0, turnId);
         toolResults.push({ action_id: tc.actionId, output: "Error: tool not defined" });
+        allToolCalls.push({ tool: tc.name, input: tc.args, output: "Error: tool not defined" });
       }
     }
 
-    const firstActionId = toolResults[0]?.action_id ?? "";
-    if (!firstActionId) break;
+    if (needsUserApproval && toolResults.length === 0) {
+      yield createSessionWaiting();
+      return;
+    }
+
+    const firstActionId = toolResults[0]!.action_id;
 
     const approveRes = await fetch(
       `${endpoint}/sessions/${sessionId}/approve`,

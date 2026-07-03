@@ -21,7 +21,7 @@ describe("protocol event constructors", () => {
     const withRuntime = createSessionStarted("sess_1", {
       agentId: "a",
       modelId: "claude-sonnet-4-5",
-      zettVersion: "0.1.2",
+      arcieVersion: "0.1.2",
     });
     expect(withRuntime.data.runtime?.modelId).toBe("claude-sonnet-4-5");
   });

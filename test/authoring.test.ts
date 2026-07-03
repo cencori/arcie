@@ -34,6 +34,33 @@ describe("defineTool", () => {
   it("throws without an execute function", () => {
     expect(() => defineTool({ description: "x" } as any)).toThrow(/must have an execute/);
   });
+  it("accepts needsApproval strategies", () => {
+    const always = defineTool({ description: "A", needsApproval: "always", execute: () => 1 });
+    expect(always.needsApproval).toBe("always");
+    const never = defineTool({ description: "B", needsApproval: "never", execute: () => 2 });
+    expect(never.needsApproval).toBe("never");
+    const once = defineTool({ description: "C", needsApproval: "once", execute: () => 3 });
+    expect(once.needsApproval).toBe("once");
+  });
+});
+
+describe("toModelOutput", () => {
+  it("strips internal fields and produces a clean model definition", async () => {
+    const { toModelOutput } = await import("../src/tools/index");
+    const tool = defineTool({
+      description: "Add numbers",
+      inputSchema: z.object({ a: z.number(), b: z.number() }),
+      needsApproval: "always",
+      execute: () => 0,
+    });
+    const out = toModelOutput("add", tool);
+    expect(out.name).toBe("add");
+    expect(out.description).toBe("Add numbers");
+    expect(out.type).toBe("function");
+    expect(out.input_schema).toBeDefined();
+    expect((out as any).execute).toBeUndefined();
+    expect((out as any).needsApproval).toBeUndefined();
+  });
 });
 
 describe("defineInstructions", () => {

@@ -6,7 +6,7 @@ export type AssistantStepFinishReason =
   | "stop"
   | "tool-calls";
 
-export type ActionResultStatus = "completed" | "failed" | "rejected";
+export type ActionResultStatus = "completed" | "failed" | "rejected" | "pending";
 
 export interface ActionResultError {
   readonly code: string;
@@ -159,8 +159,28 @@ export function createStepCompleted(finishReason: AssistantStepFinishReason, seq
   return { type: "step.completed", data: { finishReason, sequence, stepIndex, turnId, usage } };
 }
 
+export function createStepFailed(code: string, message: string, sequence: number, stepIndex: number, turnId: string): StepFailedEvent {
+  return { type: "step.failed", data: { code, message, sequence, stepIndex, turnId } };
+}
+
+export function createReasoningAppended(delta: string, soFar: string, sequence: number, stepIndex: number, turnId: string): ReasoningAppendedEvent {
+  return { type: "reasoning.appended", data: { delta, soFar, sequence, stepIndex, turnId } };
+}
+
+export function createReasoningCompleted(text: string, sequence: number, stepIndex: number, turnId: string): ReasoningCompletedEvent {
+  return { type: "reasoning.completed", data: { text, sequence, stepIndex, turnId } };
+}
+
 export function createTurnCompleted(sequence: number, turnId: string): TurnCompletedEvent {
   return { type: "turn.completed", data: { sequence, turnId } };
+}
+
+export function createTurnFailed(code: string, message: string, sequence: number, turnId: string): TurnFailedEvent {
+  return { type: "turn.failed", data: { code, message, sequence, turnId } };
+}
+
+export function createSessionFailed(code: string, message: string, sessionId: string): SessionFailedEvent {
+  return { type: "session.failed", data: { code, message, sessionId } };
 }
 
 export function createSessionWaiting(): SessionWaitingEvent {
@@ -186,6 +206,18 @@ export function createToolCallCompleted(
     type: "tool.completed",
     data: { name, output, callId, status, ...(error ? { error } : {}), sequence: sequence ?? 1, stepIndex: stepIndex ?? 0, turnId: turnId ?? "" },
   };
+}
+
+export function createSubagentCalled(
+  name: string, callId: string, childSessionId: string, turnId: string,
+): SubagentCalledEvent {
+  return { type: "subagent.called", data: { name, callId, childSessionId, turnId } };
+}
+
+export function createSubagentCompleted(
+  name: string, callId: string, output: string,
+): SubagentCompletedEvent {
+  return { type: "subagent.completed", data: { name, callId, output } };
 }
 
 export function encodeEvent(event: StreamEvent): string {

@@ -19,12 +19,15 @@ export interface AgentConfig {
   cencori?: CencoriConfig;
 }
 
+export type ApprovalStrategy = "always" | "never" | "once";
+
 export interface ToolConfig<TInput = unknown, TOutput = unknown> {
   name?: string;
   description: string;
   inputSchema?: z.ZodType<TInput>;
   outputSchema?: z.ZodType<TOutput>;
   sandbox?: boolean;
+  needsApproval?: ApprovalStrategy;
   execute: (input: TInput) => TOutput | Promise<TOutput>;
 }
 
@@ -93,6 +96,18 @@ export interface ChannelResponse {
   body: unknown;
 }
 
+export interface ConnectionConfig {
+  name: string;
+  description: string;
+  auth: {
+    type: "oauth2" | "apiKey" | "basic";
+    authorizeUrl?: string;
+    tokenUrl?: string;
+    clientId?: string;
+    scopes?: string[];
+  };
+}
+
 export interface ScheduleConfig {
   name: string;
   cron: string;
@@ -105,8 +120,10 @@ export interface SessionConfig {
   idleTimeoutMs?: number;
   requireApproval?: boolean;
   memory?: {
-    strategy: "lastN" | "summary" | "keyFacts";
+    strategy: "lastN" | "summary" | "keyFacts" | "semantic";
     limit?: number;
+    workingMemory?: boolean;
+    workingMemoryTemplate?: string;
   };
 }
 
@@ -144,6 +161,7 @@ export interface AgentManifest {
   hooks: Record<string, HookConfig>;
   channels: Record<string, ChannelConfig>;
   schedules: Record<string, ScheduleConfig>;
+  connections: Record<string, ConnectionConfig>;
   /** Declared specialists under `subagents/<id>/`, keyed by directory name. */
   subagents: Record<string, SubagentManifest>;
   session?: SessionConfig;

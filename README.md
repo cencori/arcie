@@ -76,7 +76,7 @@ agent/subagents/researcher/
 
 ```ts
 // agent/subagents/researcher/agent.ts
-import { defineAgent } from "zett";
+import { defineAgent } from "arcie";
 
 export default defineAgent({
   model: "claude-sonnet-4-5",

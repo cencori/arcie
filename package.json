@@ -22,6 +22,7 @@
     "./channels": "./dist/channels/index.js",
     "./schedules": "./dist/schedules/index.js",
     "./context": "./dist/context/index.js",
+    "./memory": "./dist/memory/index.js",
     "./agent": "./dist/agent/index.js",
     "./runner": "./dist/runner/index.js",
     "./auth": "./dist/auth/index.js",
@@ -32,6 +33,7 @@
     "*": {
       "*": [
         "./dist/*/index.d.ts",
+        "./dist/*.d.ts",
         "./dist/index.d.ts"
       ]
     }
@@ -60,6 +62,7 @@
   },
   "homepage": "https://cencori.com/arcie",
   "dependencies": {
+    "@libsql/client": "^0.17.4",
     "chalk": "^5.3.0",
     "commander": "^12.0.0",
     "ora": "^8.0.1",

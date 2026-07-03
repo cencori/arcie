@@ -9,7 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = resolve(__dirname, "fixtures/agent");
 
 function tempAgent(build: (dir: string) => void): string {
-  const dir = mkdtempSync(join(tmpdir(), "zett-discover-"));
+  const dir = mkdtempSync(join(tmpdir(), "arcie-discover-"));
   build(dir);
   return dir;
 }
@@ -34,7 +34,7 @@ describe("discoverAgent — happy path", () => {
 
 describe("discoverAgent — diagnostics", () => {
   it("reports AGENT_DIR_NOT_FOUND for a missing directory", () => {
-    const { diagnostics } = discoverAgent(join(tmpdir(), "zett-nope-does-not-exist"));
+    const { diagnostics } = discoverAgent(join(tmpdir(), "arcie-nope-does-not-exist"));
     expect(diagnostics.some((d) => d.code === "AGENT_DIR_NOT_FOUND" && d.severity === "error")).toBe(true);
   });
 

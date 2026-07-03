@@ -1,8 +1,5 @@
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { resolve, basename, extname } from "node:path";
-import { createRequire } from "node:module";
-
-const _require = createRequire(import.meta.url);
 import type {
   AgentManifest,
   AgentConfig,
@@ -10,6 +7,7 @@ import type {
   SkillConfig,
   HookConfig,
   ChannelConfig,
+  ConnectionConfig,
   ScheduleConfig,
   SessionConfig,
   PolicyConfig,
@@ -37,8 +35,8 @@ export async function loadAgent(agentDir: string): Promise<LoadedAgent> {
       if (mod.default) {
         config = { ...config, ...mod.default };
       }
-    } catch {
-      // fall back to defaults
+    } catch (err) {
+      console.warn(`[arcie] Failed to load agent.ts: ${(err as Error).message}. Using defaults.`);
     }
   }
 
@@ -47,10 +45,11 @@ export async function loadAgent(agentDir: string): Promise<LoadedAgent> {
   const skills = await loadDirectory<SkillConfig>(absDir, "skills");
   const hooks = await loadDirectory<HookConfig>(absDir, "hooks");
   const channels = await loadDirectory<ChannelConfig>(absDir, "channels");
+  const connections = await loadDirectory<ConnectionConfig>(absDir, "connections");
   const schedules = await loadDirectory<ScheduleConfig>(absDir, "schedules");
   const subagents = await loadSubagents(absDir);
-  const session = loadSessionConfig(absDir);
-  const policy = loadPolicyConfig(absDir);
+  const session = await loadSessionConfig(absDir);
+  const policy = await loadPolicyConfig(absDir);
 
   return {
     agentDir: absDir,
@@ -61,6 +60,7 @@ export async function loadAgent(agentDir: string): Promise<LoadedAgent> {
       skills,
       hooks,
       channels,
+      connections,
       schedules,
       subagents,
       session: session ?? undefined,
@@ -160,11 +160,11 @@ async function loadDirectory<T>(
   return result;
 }
 
-function loadSessionConfig(agentDir: string): SessionConfig | null {
+async function loadSessionConfig(agentDir: string): Promise<SessionConfig | null> {
   const tsPath = resolve(agentDir, "sessions", "config.ts");
   if (existsSync(tsPath)) {
     try {
-      const mod = _require(tsPath);
+      const mod = await import(tsPath);
       return mod.default ?? null;
     } catch {
       return null;
@@ -173,11 +173,11 @@ function loadSessionConfig(agentDir: string): SessionConfig | null {
   return null;
 }
 
-function loadPolicyConfig(agentDir: string): PolicyConfig | null {
+async function loadPolicyConfig(agentDir: string): Promise<PolicyConfig | null> {
   const tsPath = resolve(agentDir, "policies", "index.ts");
   if (existsSync(tsPath)) {
     try {
-      const mod = _require(tsPath);
+      const mod = await import(tsPath);
       return mod.default ?? null;
     } catch {
       return null;
