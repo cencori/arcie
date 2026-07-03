@@ -1,13 +1,14 @@
 import { zodToJsonSchema } from "zod-to-json-schema";
-import { loadAgent, type LoadedAgent } from "../loader.js";
-import type { TurnContext, ToolCallContext } from "../types.js";
+import { loadAgent, type LoadedAgent } from "../loader";
+import { discoverAgent } from "../discover/index";
+import type { TurnContext, ToolCallContext } from "../types";
 import {
   createSessionStarted, createTurnStarted, createMessageReceived,
   createMessageAppended, createMessageCompleted, createStepStarted,
   createStepCompleted, createSessionWaiting, createTurnCompleted,
   createSessionCompleted, createToolCallStarted, createToolCallCompleted,
   type StreamEvent,
-} from "../protocol/events.js";
+} from "../protocol/events";
 
 export interface RunOptions {
   endpoint?: string;

@@ -1,0 +1,95 @@
+# Subagents
+
+A subagent is a child agent that the orchestrator delegates a focused subtask to.
+Each one runs in its own **fresh, isolated session** — it never sees the parent's
+conversation history. The parent passes everything the child needs through a single
+`message` and gets a result back. This keeps the orchestrator's context small and
+each specialist sharply scoped.
+
+## Two kinds
+
+- **Declared subagents** — specialists you define under `agent/subagents/<id>/`.
+  Use one when the child needs a different prompt, a narrower tool surface, or its
+  own runtime context.
+- **The built-in `agent` tool** — every agent can spawn a copy of itself for a
+  focused subtask. The copy inherits the parent's instructions, tools, and skills,
+  but starts with fresh state.
+
+If the agent can keep its own identity and just needs an optional procedure, reach
+for a skill instead of a subagent.
+
+## Defining a subagent
+
+A subagent is a directory that looks like a small agent:
+
+```
+agent/subagents/researcher/
+├── agent.ts          # required — defineAgent({ model, description })
+├── instructions.md   # optional — the subagent's system prompt
+├── tools/            # optional — the subagent's own tools
+└── skills/           # optional — the subagent's own knowledge
+```
+
+```ts
+// agent/subagents/researcher/agent.ts
+import { defineAgent } from "zett";
+
+export default defineAgent({
+  model: "claude-sonnet-4-5",
+  description: "Investigate ambiguous questions before the parent agent responds.",
+});
+```
+
+The directory name (`researcher`) becomes the tool name the orchestrator calls.
+
+### `description` is required
+
+Unlike the root agent, a subagent **must** declare a `description` — it's how the
+orchestrator decides when to delegate. Leaving it out is a hard error at load time:
+
+```
+Subagent "researcher" must declare a description in agent.ts
+```
+
+A subagent directory with no `agent.ts` is reported by `zett dev` / `zett build` as
+`SUBAGENT_MISSING_CONFIG`.
+
+## Isolation
+
+Declared subagents are isolated. They **inherit nothing** from the parent — absent
+slots fall back to the framework default, not to the root agent's version. If two
+subagents need the same procedure, copy it under each one's `skills/`.
+
+This isolation is deliberate: each delegation spins up its own session, so the
+subagent's work never pollutes the parent's context, and the parent only ever sees
+the subagent's final result.
+
+## How delegation works
+
+The orchestrator perceives subagents as tools. Both declared subagents and the
+built-in `agent` tool expose the same interface:
+
+```ts
+{
+  message: string;        // all the context the child needs (it sees nothing else)
+  outputSchema?: object;  // when set, the child returns structured output
+}
+```
+
+When `outputSchema` is provided, the subagent runs in **task mode** and returns
+structured output as the tool result — which is what makes fan-out / map-reduce
+orchestration possible.
+
+Each delegation emits two control-plane events in the parent's stream:
+
+- `subagent.called` — `{ name, callId, childSessionId, turnId }`
+- `subagent.completed` — `{ name, callId, output }`
+
+## Status
+
+Authoring and loading work today: subagents are discovered, validated (including the
+`description` requirement), and loaded into the agent manifest with their own
+instructions and tools — `zett build` lists them under `subagents` in the manifest.
+The runtime orchestration loop — the model invoking a subagent, spawning the isolated
+child session, and feeding the result back into the parent turn — is being wired
+through the Cencori Sessions API.
