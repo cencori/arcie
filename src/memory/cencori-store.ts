@@ -1,4 +1,4 @@
-import type { MemoryEntry, MemoryStore } from "./types";
+import type { MemoryEntry, MemoryStore, Thread, DeleteMessagesOptions } from "./types";
 
 export interface CencoriMemoryClient {
   store(options: {
@@ -88,6 +88,63 @@ export class CencoriMemoryStore implements MemoryStore {
   }
 
   async close(): Promise<void> {
-    // no-op for SDK-backed store
+    // no-op
+  }
+
+  async createThread(_thread: Thread): Promise<void> {
+    throw new Error("Thread management not supported by CencoriMemoryStore");
+  }
+
+  async getThread(_threadId: string, _resourceId: string): Promise<Thread | null> {
+    throw new Error("Thread management not supported by CencoriMemoryStore");
+  }
+
+  async listThreads(_resourceId: string): Promise<Thread[]> {
+    throw new Error("Thread management not supported by CencoriMemoryStore");
+  }
+
+  async updateThread(_thread: Partial<Thread> & { id: string; resourceId: string }): Promise<void> {
+    throw new Error("Thread management not supported by CencoriMemoryStore");
+  }
+
+  async deleteThread(_threadId: string, _resourceId: string): Promise<void> {
+    throw new Error("Thread management not supported by CencoriMemoryStore");
+  }
+
+  async deleteMessages(opts: DeleteMessagesOptions): Promise<number> {
+    if (!this.client.delete) throw new Error("CencoriMemoryClient does not support delete");
+
+    const filter: Record<string, unknown> = { threadId: opts.threadId };
+    if (opts.messageIds && opts.messageIds.length > 0) {
+      filter.turnId = { $in: opts.messageIds };
+    }
+    if (opts.beforeTimestamp !== undefined) {
+      filter.timestamp = { $gte: opts.beforeTimestamp };
+    }
+    if (opts.afterTimestamp !== undefined) {
+      filter.timestamp = { ...(filter.timestamp as Record<string, unknown> || {}), $lte: opts.afterTimestamp };
+    }
+
+    await this.client.delete({ namespace: opts.resourceId, filter });
+    return -1; // SDK doesn't return count
+  }
+
+  async cloneThread(
+    source: { threadId: string; resourceId: string },
+    dest: { threadId: string; resourceId: string },
+  ): Promise<void> {
+    const entries = await this.load(source.resourceId, source.threadId);
+    for (const entry of entries) {
+      await this.client.store({
+        namespace: dest.resourceId,
+        content: entry.content,
+        metadata: {
+          threadId: dest.threadId,
+          role: entry.role,
+          timestamp: entry.timestamp,
+          turnId: entry.turnId,
+        },
+      });
+    }
   }
 }
