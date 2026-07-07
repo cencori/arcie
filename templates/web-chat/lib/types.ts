@@ -8,6 +8,7 @@ export interface UiMessage {
   reasoning?: string;
   streaming?: boolean;
   errored?: boolean;
+  latencyMs?: number;
 }
 
 export interface UiToolCall {

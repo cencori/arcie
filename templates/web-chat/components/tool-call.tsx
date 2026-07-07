@@ -44,18 +44,18 @@ export function ToolCall({ call }: { call: UiToolCall }) {
   return (
     <div
       className={cn(
-        "flex flex-col gap-1 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm",
+        "flex flex-col gap-1 rounded-lg border border-border/30 bg-muted/10 px-3 py-2 text-xs",
       )}
     >
       <div className="flex items-center gap-2">
         <StatusGlyph status={call.status} />
-        <span className="font-mono font-medium">{call.name}</span>
+        <span className="font-mono font-medium text-[11px]">{call.name}</span>
         {args.length > 0 && (
-          <span className="truncate font-mono text-xs text-muted-foreground">{args}</span>
+          <span className="truncate font-mono text-[10px] text-muted-foreground/70">{args}</span>
         )}
       </div>
       {result !== undefined && (
-        <div className="ml-6 truncate text-xs text-muted-foreground">
+        <div className="ml-6 truncate text-[10px] text-muted-foreground/70">
           → <span className="font-mono">{result}</span>
         </div>
       )}
@@ -66,13 +66,13 @@ export function ToolCall({ call }: { call: UiToolCall }) {
 function StatusGlyph({ status }: { status: UiToolCall["status"] }) {
   switch (status) {
     case "running":
-      return <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />;
+      return <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />;
     case "done":
-      return <CheckCircle2 className="h-4 w-4 text-emerald-500" />;
+      return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />;
     case "error":
-      return <XCircle className="h-4 w-4 text-destructive" />;
+      return <XCircle className="h-3.5 w-3.5 text-destructive" />;
     case "approval":
-      return <HelpCircle className="h-4 w-4 text-amber-500" />;
+      return <HelpCircle className="h-3.5 w-3.5 text-amber-500" />;
     default:
       return null;
   }

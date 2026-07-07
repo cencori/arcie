@@ -49,7 +49,17 @@
   * {
     @apply border-border;
   }
+  html,
   body {
     @apply bg-background text-foreground antialiased;
+    min-height: 100%;
+  }
+  /* Hide Next.js dev-mode injected UI (SegmentExplorer, portals, toasts). */
+  nextjs-portal,
+  [data-nextjs-toast-wrapper],
+  [data-nextjs-dialog-overlay],
+  [data-nextjs-scroll-focus-boundary],
+  [data-nextjs-devtools-panel] {
+    display: none !important;
   }
 }

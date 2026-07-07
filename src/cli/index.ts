@@ -204,12 +204,26 @@ function createCliProgram(logger: CliLogger): Command {
   return program;
 }
 
+const KNOWN_COMMANDS = new Set(["channels", "init", "build", "dev", "help"]);
+
+function resolveArgv(argv: readonly string[]): string[] {
+  if (argv.length === 0) return ["dev"];
+  const first = argv[0]!;
+  if (first === "-h" || first === "--help" || first === "-V" || first === "--version") {
+    return [...argv];
+  }
+  if (first.startsWith("-")) return [...argv];
+  if (KNOWN_COMMANDS.has(first)) return [...argv];
+  // Bare positional like `arcie my-agent` — treat as `arcie init my-agent`.
+  return ["init", ...argv];
+}
+
 export async function runCli(
   argv: string[] = process.argv.slice(2),
   logger: CliLogger = console,
 ): Promise<void> {
   const program = createCliProgram(logger);
-  const input = argv.length === 0 ? ["dev"] : argv;
+  const input = resolveArgv(argv);
 
   try {
     await program.parseAsync(input, { from: "user" });
