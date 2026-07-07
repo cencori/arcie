@@ -29,6 +29,13 @@ export interface RunResult {
   sessionId: string;
 }
 
+function truncateBody(body: string): string {
+  if (body.length > 200 && (body.startsWith("<!") || body.startsWith("<html"))) {
+    return body.slice(0, 200) + "... (HTML response truncated)";
+  }
+  return body;
+}
+
 const DEFAULT_ENDPOINT = "https://cencori.com/v1";
 
 async function createChildSession(
@@ -54,7 +61,7 @@ async function createChildSession(
   });
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Subagent session error (${res.status}): ${err}`);
+    throw new Error(`Subagent session error (${res.status}): ${truncateBody(err)}`);
   }
   const data = await res.json() as { id: string };
   return data.id;
@@ -96,7 +103,7 @@ async function executeSubagent(
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Subagent turn error (${res.status}): ${err}`);
+    throw new Error(`Subagent turn error (${res.status}): ${truncateBody(err)}`);
   }
 
   let output = "";
@@ -160,7 +167,7 @@ async function createSession(
   });
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Cencori Sessions API error (${res.status}): ${err}`);
+    throw new Error(`Cencori Sessions API error (${res.status}): ${truncateBody(err)}`);
   }
   const data = await res.json() as { id: string };
   return data.id;
@@ -245,7 +252,7 @@ async function* readTurnSSE(
 ): AsyncGenerator<StreamEvent, TurnResult, unknown> {
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`Cencori Sessions API error (${response.status}): ${error}`);
+    throw new Error(`Cencori Sessions API error (${response.status}): ${truncateBody(error)}`);
   }
 
   const reader = response.body?.getReader();
@@ -423,7 +430,7 @@ export async function* streamAgent(
     const error = await response.text();
     yield createTurnCompleted(1, turnId);
     yield createSessionCompleted();
-    throw new Error(`Cencori Sessions API error (${response.status}): ${error}`);
+    throw new Error(`Cencori Sessions API error (${response.status}): ${truncateBody(error)}`);
   }
 
   // Track tools approved via "once" strategy within this session
@@ -528,7 +535,7 @@ export async function* streamAgent(
       const errText = await approveRes.text();
       yield createTurnCompleted(1, turnId);
       yield createSessionCompleted();
-      throw new Error(`Cencori Sessions approve error (${approveRes.status}): ${errText}`);
+      throw new Error(`Cencori Sessions approve error (${approveRes.status}): ${truncateBody(errText)}`);
     }
 
     response = approveRes;

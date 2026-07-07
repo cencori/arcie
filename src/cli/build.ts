@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { loadAgent } from "../loader";
 import { discoverAgent } from "../discover/index";
+import { grey, dimmed } from "./style";
 
 export async function buildCommand(options: {
   agentDir: string;
@@ -21,7 +22,7 @@ export async function buildCommand(options: {
 
   if (diagnostics.some((d) => d.severity === "error")) {
     for (const d of diagnostics) {
-      console.error(`  ✖ ${d.code}: ${d.message}`);
+      console.error(`  ${grey("\u2716")} ${d.code}: ${d.message}`);
     }
     process.exit(1);
   }
@@ -44,7 +45,7 @@ export async function buildCommand(options: {
         Object.entries(agent.manifest.subagents).map(([id, sub]) => [
           id,
           { description: sub.config.description, tools: Object.keys(sub.tools) },
-        ])
+        ]),
       ),
       discovered: {
         tools: discovered.tools.map((t) => t.name),
@@ -59,19 +60,19 @@ export async function buildCommand(options: {
       policy: agent.manifest.policy,
     };
 
-    writeFileSync(
-      join(outDir, "manifest.json"),
-      JSON.stringify(manifest, null, 2)
-    );
+    writeFileSync(join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2));
 
-    console.log(`  Written to ${outDir}/manifest.json`);
-    console.log(`  Tools: ${manifest.tools.length}`);
-    console.log(`  Skills: ${manifest.skills.length}`);
-    console.log(`  Channels: ${manifest.channels.length}`);
-    console.log(`  Connections: ${manifest.connections.length}`);
-    console.log(`  Schedules: ${manifest.schedules.length}`);
-    console.log(`  Subagents: ${Object.keys(manifest.subagents).length}`);
-    console.log(`\n  Done.\n`);
+    console.log(`  Written to ${dimmed(`${outDir}/manifest.json`)}`);
+    console.log(`  ${grey(`\xB7 ${manifest.tools.length} tools`)}`);
+    console.log(`  ${grey(`\xB7 ${manifest.skills.length} skills`)}`);
+    console.log(`  ${grey(`\xB7 ${manifest.channels.length} channels`)}`);
+    console.log(`  ${grey(`\xB7 ${manifest.connections.length} connections`)}`);
+    console.log(`  ${grey(`\xB7 ${manifest.schedules.length} schedules`)}`);
+    console.log(`  ${grey(`\xB7 ${Object.keys(manifest.subagents).length} subagents`)}`);
+    console.log();
+    console.log(`  ${grey("\u2500".repeat(50))}`);
+    console.log(`  ${grey("Build complete.")}`);
+    console.log();
   } catch (err) {
     console.error(`  Build failed:`, err);
     process.exit(1);
