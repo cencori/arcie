@@ -1,5 +1,4 @@
 export { defineAgent } from "./agent/index";
-export { cencori } from "./models/index";
 export { defineInstructions, loadInstructions } from "./instructions/index";
 export { defineTool, toModelOutput } from "./tools/index";
 export { defineSkill, getSkill } from "./skills/index";

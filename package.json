@@ -27,7 +27,6 @@
     "./runner": "./dist/runner/index.js",
     "./auth": "./dist/auth/index.js",
     "./discover": "./dist/discover/index.js",
-    "./models": "./dist/models/index.js",
     "./protocol": "./dist/protocol/events.js"
 
   },

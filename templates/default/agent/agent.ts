@@ -1,7 +1,7 @@
-import { defineAgent, cencori } from "arcie";
+import { defineAgent } from "arcie";
 
 export default defineAgent({
-  model: cencori("claude-sonnet-4-5"),
+  model: "claude-sonnet-4-5",
   name: "my-agent",
   description: "An Arcie agent powered by Cencori.",
   cencori: {
