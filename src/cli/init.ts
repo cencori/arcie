@@ -345,32 +345,19 @@ async function runInit(
 
   await maybeScaffoldWebChat(prompter, targetDir);
 
-  const action = await prompter.select({
-    message: "How would you like to continue?",
+  const start = await prompter.select({
+    message: "Start dev server now?",
     options: [
-      { value: "chat", label: `Start arcie dev — talk to '${name ?? "."}' in your terminal` },
-      { value: "server", label: "Start arcie dev server" },
-      { value: "code", label: "Open in editor" },
+      { value: "yes", label: "Yes — arcie dev + web UI, browser opens" },
+      { value: "no", label: `No — later: cd ${name ?? "."} && arcie dev` },
     ],
   });
-  if (action === undefined) return;
-
-  switch (action) {
-    case "chat": {
-      const { devCommand } = await import("./dev");
-      prompter.stop();
-      await devCommand({ port: "3000", agentDir: targetDir, input: true });
-      break;
-    }
-    case "server": {
-      const { devCommand } = await import("./dev");
-      prompter.stop();
-      await devCommand({ port: "3000", agentDir: targetDir, input: false });
-      break;
-    }
-    case "code": {
-      prompter.log.info(`cd ${name ?? "."} && code .`);
-      break;
-    }
+  if (start !== "yes") {
+    prompter.log.info(`later: cd ${name ?? "."} && arcie dev`);
+    return;
   }
+
+  const { devCommand } = await import("./dev");
+  prompter.stop();
+  await devCommand({ port: "3000", agentDir: targetDir, input: false });
 }

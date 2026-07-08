@@ -1,5 +1,7 @@
+import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
-import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { loadAgent } from "../loader";
 import { discoverAgent } from "../discover/index";
 import { streamAgent } from "../runner/index";
@@ -12,6 +14,10 @@ export interface DevOptions {
   port: string;
   agentDir: string;
   input?: boolean;
+  /** Skip auto-starting the channels/web/ dev server even when it exists. */
+  noWeb?: boolean;
+  /** Skip auto-opening the browser at the web channel URL. */
+  noOpen?: boolean;
 }
 
 function checkProviderKeys(modelId: string): string[] {
@@ -54,11 +60,6 @@ function tryListen(server: ReturnType<typeof createServer>, port: number): Promi
   });
 }
 
-/**
- * Binds `server` to the first free port starting at `startPort`, walking
- * forward one port at a time until it finds one or exhausts the attempt
- * budget. Returns the bound port. Non-EADDRINUSE errors bubble up.
- */
 async function listenWithFallback(
   server: ReturnType<typeof createServer>,
   startPort: number,
@@ -76,6 +77,102 @@ async function listenWithFallback(
   throw new Error(
     `Could not find a free port in ${startPort}..${startPort + MAX_PORT_ATTEMPTS - 1}`,
   );
+}
+
+function isPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = createServer();
+    probe.once("error", () => resolve(false));
+    probe.once("listening", () => {
+      probe.close(() => resolve(true));
+    });
+    probe.listen(port);
+  });
+}
+
+async function findFreePort(startPort: number, maxAttempts = MAX_PORT_ATTEMPTS): Promise<number> {
+  for (let offset = 0; offset < maxAttempts; offset += 1) {
+    const port = startPort + offset;
+    if (await isPortFree(port)) return port;
+  }
+  throw new Error(`No free port in ${startPort}..${startPort + maxAttempts - 1}`);
+}
+
+function openBrowser(url: string): void {
+  const command =
+    process.platform === "darwin" ? "open"
+      : process.platform === "win32" ? "start"
+      : "xdg-open";
+  try {
+    const child = spawn(command, [url], {
+      detached: true,
+      stdio: "ignore",
+      shell: process.platform === "win32",
+    });
+    child.unref();
+  } catch {
+    // Non-fatal: user can copy the URL from the console.
+  }
+}
+
+async function waitForHttp(url: string, timeoutMs = 30_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(url, { method: "GET" });
+      if (res.status < 500) return true;
+    } catch {
+      // fetch throws for connection refused — keep polling
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
+interface WebChannelHandle {
+  readonly url: string;
+  readonly process: ChildProcess;
+}
+
+/**
+ * Spawns the channels/web/ dev server as a child process, waits for it to
+ * come up, and returns a handle the caller can kill on shutdown. Returns
+ * undefined when the channel isn't scaffolded, isn't installed, or fails
+ * to start in time.
+ */
+async function startWebChannel(
+  agentDir: string,
+  arcieUrl: string,
+  webPort: number,
+): Promise<WebChannelHandle | undefined> {
+  const webDir = join(agentDir, "channels", "web");
+  if (!existsSync(join(webDir, "package.json"))) return undefined;
+
+  if (!existsSync(join(webDir, "node_modules"))) {
+    console.log();
+    console.log(`  ${grey("⚠")} channels/web needs deps installed:`);
+    console.log(`  ${dimmed(`  cd ${webDir} && npm install`)}`);
+    console.log();
+    return undefined;
+  }
+
+  const child = spawn("npm", ["run", "dev", "--", "--port", String(webPort)], {
+    cwd: webDir,
+    env: { ...process.env, ARCIE_URL: arcieUrl },
+    stdio: "ignore",
+    detached: false,
+  });
+
+  const url = `http://localhost:${webPort}`;
+  const ready = await waitForHttp(url, 45_000);
+  if (!ready) {
+    console.log();
+    console.log(`  ${grey("⚠")} channels/web didn't come up within 45s`);
+    child.kill();
+    return undefined;
+  }
+
+  return { url, process: child };
 }
 
 export async function devCommand(options: DevOptions): Promise<void> {
@@ -161,26 +258,54 @@ export async function devCommand(options: DevOptions): Promise<void> {
         );
         console.log();
       }
-      console.log(`  ${dimmed(`http://localhost:${boundPort}`)}`);
-      console.log();
-      console.log(`  ${dimmed(`$ curl -X POST http://localhost:${boundPort} \\`)}`);
-      console.log(`  ${dimmed(`  -H "Content-Type: application/json" \\`)}`);
-      console.log(`  ${dimmed(`  -d '{"message": "hello"}'`)}`);
-      console.log();
+      console.log(`  ${dimmed(`agent  http://localhost:${boundPort}`)}`);
 
       const missing = checkProviderKeys(agent.manifest.config.model);
       if (missing.length > 0) {
+        console.log();
         console.log(`  ${grey("⚠")} Missing API keys: ${missing.join(", ")}`);
         console.log(`  ${dimmed("  Set them in .env.local or your environment")}`);
-        console.log();
       }
     } catch {
       console.log(`  ${agentDirPath}`);
       console.log();
-      console.log(`  ${dimmed(`http://localhost:${boundPort}`)}`);
-      console.log();
+      console.log(`  ${dimmed(`agent  http://localhost:${boundPort}`)}`);
     }
   }
+
+  let webChannel: WebChannelHandle | undefined;
+  if (!options.input && options.noWeb !== true) {
+    const webDir = join(agentDirPath, "channels", "web");
+    if (existsSync(webDir)) {
+      try {
+        const webPort = await findFreePort(3001);
+        console.log(`  ${dimmed(`web    starting on http://localhost:${webPort}…`)}`);
+        webChannel = await startWebChannel(agentDirPath, `http://localhost:${boundPort}`, webPort);
+        if (webChannel !== undefined) {
+          console.log(`  ${dimmed(`web    http://localhost:${webPort}`)}`);
+          if (options.noOpen !== true) openBrowser(webChannel.url);
+        }
+      } catch (err) {
+        console.log(
+          `  ${grey("⚠")} could not start web channel: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  if (!options.input) {
+    console.log();
+    console.log(`  ${dimmed("Ctrl+C to stop")}`);
+    console.log();
+  }
+
+  const shutdown = () => {
+    if (webChannel !== undefined) webChannel.process.kill();
+    server.close();
+    process.exit(0);
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
 
   if (options.input) {
     void startBlockChat({ agentDir: agentDirPath });

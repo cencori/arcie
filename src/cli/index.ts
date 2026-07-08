@@ -192,12 +192,16 @@ function createCliProgram(logger: CliLogger): Command {
       parseContextSizeOption,
     )
     .option("--logs <mode>", "Which logs to show: all | stderr | none", parseLogsMode)
+    .option("--no-web", "Do not auto-start the channels/web/ dev server")
+    .option("--no-open", "Do not auto-open the browser at the web channel URL")
     .action(async (options) => {
       const { devCommand } = await import("./dev");
       await devCommand({
         port: String(options.port ?? 3000),
         agentDir: options.agentDir,
-        input: options.ui === false ? false : Boolean(options.input) || options.ui !== false,
+        input: options.ui === false ? false : Boolean(options.input),
+        noWeb: options.web === false,
+        noOpen: options.open === false,
       });
     });
 
