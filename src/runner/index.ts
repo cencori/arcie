@@ -26,6 +26,12 @@ export interface RunOptions {
    * `<agentDir>/<agentId>.ts` as a self-contained inline agent.
    */
   agentId?: string;
+  /**
+   * When true, the loader cache-busts every dynamic `import()` so edits to
+   * agent files land on the next request without restarting the process.
+   * `arcie dev` sets this to true by default. Not for production.
+   */
+  hotReload?: boolean;
 }
 
 export interface RunResult {
@@ -377,10 +383,11 @@ export async function* streamAgent(
   input: string,
   options: RunOptions = {},
 ): AsyncGenerator<StreamEvent, void, unknown> {
+  const loadOpts = { hotReload: options.hotReload };
   const agent =
     options.agentId !== undefined && options.agentId !== "agent"
-      ? await loadAgentById(agentDir, options.agentId)
-      : await loadAgent(agentDir);
+      ? await loadAgentById(agentDir, options.agentId, loadOpts)
+      : await loadAgent(agentDir, loadOpts);
   const endpoint = options.endpoint || process.env.CENCORI_API_URL || DEFAULT_ENDPOINT;
   const apiKey = options.apiKey || process.env.CENCORI_API_KEY || "";
 

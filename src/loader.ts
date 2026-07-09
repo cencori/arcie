@@ -21,9 +21,32 @@ export interface LoadedAgent {
   id: string;
 }
 
+export interface LoadAgentOptions {
+  /**
+   * When true, every dynamic `import()` this loader performs is cache-busted
+   * with a `?v=<timestamp>` query so edits to agent files are picked up on
+   * the next load without restarting the process. Cost: each load creates
+   * a fresh module in memory. Cheap in dev; do not enable in production.
+   */
+  hotReload?: boolean;
+}
+
 export const PRIMARY_AGENT_ID = "agent";
 
-export async function loadAgent(agentDir: string): Promise<LoadedAgent> {
+/**
+ * Appends a cache-busting query parameter to a module path when hot reload
+ * is enabled. Node's ESM loader keys the module cache by the resolved URL,
+ * so a fresh query string forces a re-import from disk.
+ */
+function moduleSpecifier(filePath: string, hotReload: boolean | undefined): string {
+  if (!hotReload) return filePath;
+  return `${filePath}?v=${Date.now()}`;
+}
+
+export async function loadAgent(
+  agentDir: string,
+  options: LoadAgentOptions = {},
+): Promise<LoadedAgent> {
   const absDir = resolve(process.cwd(), agentDir);
 
   if (!existsSync(absDir)) {
@@ -35,7 +58,7 @@ export async function loadAgent(agentDir: string): Promise<LoadedAgent> {
 
   if (existsSync(agentFile)) {
     try {
-      const mod = await import(agentFile);
+      const mod = await import(moduleSpecifier(agentFile, options.hotReload));
       if (mod.default) {
         config = { ...config, ...mod.default };
       }
@@ -45,19 +68,19 @@ export async function loadAgent(agentDir: string): Promise<LoadedAgent> {
   }
 
   const instructions = loadInstructionsFile(absDir);
-  const tools = await loadDirectory<ToolConfig>(absDir, "tools");
-  const skills = await loadDirectory<SkillConfig>(absDir, "skills");
-  const hooks = await loadDirectory<HookConfig>(absDir, "hooks");
-  const channels = await loadDirectory<ChannelConfig>(absDir, "channels");
-  const connections = await loadDirectory<ConnectionConfig>(absDir, "connections");
-  const schedules = await loadDirectory<ScheduleConfig>(absDir, "schedules");
-  const directorySubagents = await loadSubagents(absDir);
+  const tools = await loadDirectory<ToolConfig>(absDir, "tools", options);
+  const skills = await loadDirectory<SkillConfig>(absDir, "skills", options);
+  const hooks = await loadDirectory<HookConfig>(absDir, "hooks", options);
+  const channels = await loadDirectory<ChannelConfig>(absDir, "channels", options);
+  const connections = await loadDirectory<ConnectionConfig>(absDir, "connections", options);
+  const schedules = await loadDirectory<ScheduleConfig>(absDir, "schedules", options);
+  const directorySubagents = await loadSubagents(absDir, options);
   const inlineSubagents = materializeInlineSubagents(config.subagents);
   // Directory-based entries win on id collision — they're more explicit and
   // typically pre-existing.
   const subagents = { ...inlineSubagents, ...directorySubagents };
-  const session = await loadSessionConfig(absDir);
-  const policy = await loadPolicyConfig(absDir);
+  const session = await loadSessionConfig(absDir, options);
+  const policy = await loadPolicyConfig(absDir, options);
 
   return {
     id: PRIMARY_AGENT_ID,
@@ -86,7 +109,11 @@ export async function loadAgent(agentDir: string): Promise<LoadedAgent> {
  * self-contained path for adding multiple top-level agents without carving
  * out a directory per one.
  */
-export async function loadInlineAgent(agentDir: string, id: string): Promise<LoadedAgent> {
+export async function loadInlineAgent(
+  agentDir: string,
+  id: string,
+  options: LoadAgentOptions = {},
+): Promise<LoadedAgent> {
   const absDir = resolve(process.cwd(), agentDir);
   const filePath = resolve(absDir, `${id}.ts`);
   if (!existsSync(filePath)) {
@@ -95,7 +122,7 @@ export async function loadInlineAgent(agentDir: string, id: string): Promise<Loa
 
   let mod: { default?: AgentConfig };
   try {
-    mod = await import(filePath);
+    mod = await import(moduleSpecifier(filePath, options.hotReload));
   } catch (err) {
     throw new Error(`Failed to load ${id}.ts: ${(err as Error).message}`);
   }
@@ -150,9 +177,13 @@ function materializeInlineSubagents(
  * for any additional top-level `.ts` file. Runners and the HTTP server use
  * this so callers don't need to know the discovery mechanics.
  */
-export async function loadAgentById(agentDir: string, id: string): Promise<LoadedAgent> {
-  if (id === PRIMARY_AGENT_ID) return loadAgent(agentDir);
-  return loadInlineAgent(agentDir, id);
+export async function loadAgentById(
+  agentDir: string,
+  id: string,
+  options: LoadAgentOptions = {},
+): Promise<LoadedAgent> {
+  if (id === PRIMARY_AGENT_ID) return loadAgent(agentDir, options);
+  return loadInlineAgent(agentDir, id, options);
 }
 
 /**
@@ -163,7 +194,8 @@ export async function loadAgentById(agentDir: string, id: string): Promise<Loade
  * delegate to it — a missing one is a hard authoring error.
  */
 async function loadSubagents(
-  agentDir: string
+  agentDir: string,
+  options: LoadAgentOptions = {},
 ): Promise<Record<string, SubagentManifest>> {
   const dirPath = resolve(agentDir, "subagents");
   if (!existsSync(dirPath)) return {};
@@ -182,7 +214,7 @@ async function loadSubagents(
 
     let mod: { default?: AgentConfig };
     try {
-      mod = await import(agentFile);
+      mod = await import(moduleSpecifier(agentFile, options.hotReload));
     } catch (err) {
       throw new Error(`Failed to load subagent "${id}": ${(err as Error).message}`);
     }
@@ -198,8 +230,8 @@ async function loadSubagents(
     result[id] = {
       config,
       instructions: loadInstructionsFile(subDir),
-      tools: await loadDirectory<ToolConfig>(subDir, "tools"),
-      skills: await loadDirectory<SkillConfig>(subDir, "skills"),
+      tools: await loadDirectory<ToolConfig>(subDir, "tools", options),
+      skills: await loadDirectory<SkillConfig>(subDir, "skills", options),
     };
   }
 
@@ -240,7 +272,8 @@ function loadInstructionsFile(agentDir: string): string {
 
 async function loadDirectory<T>(
   agentDir: string,
-  dirName: string
+  dirName: string,
+  options: LoadAgentOptions = {},
 ): Promise<Record<string, T>> {
   const dirPath = resolve(agentDir, dirName);
   if (!existsSync(dirPath)) return {};
@@ -257,7 +290,7 @@ async function loadDirectory<T>(
 
     if (statSync(filePath).isFile()) {
       try {
-        const mod = await import(filePath);
+        const mod = await import(moduleSpecifier(filePath, options.hotReload));
         if (mod.default) {
           result[name] = mod.default;
         }
@@ -270,11 +303,14 @@ async function loadDirectory<T>(
   return result;
 }
 
-async function loadSessionConfig(agentDir: string): Promise<SessionConfig | null> {
+async function loadSessionConfig(
+  agentDir: string,
+  options: LoadAgentOptions = {},
+): Promise<SessionConfig | null> {
   const tsPath = resolve(agentDir, "sessions", "config.ts");
   if (existsSync(tsPath)) {
     try {
-      const mod = await import(tsPath);
+      const mod = await import(moduleSpecifier(tsPath, options.hotReload));
       return mod.default ?? null;
     } catch {
       return null;
@@ -283,11 +319,14 @@ async function loadSessionConfig(agentDir: string): Promise<SessionConfig | null
   return null;
 }
 
-async function loadPolicyConfig(agentDir: string): Promise<PolicyConfig | null> {
+async function loadPolicyConfig(
+  agentDir: string,
+  options: LoadAgentOptions = {},
+): Promise<PolicyConfig | null> {
   const tsPath = resolve(agentDir, "policies", "index.ts");
   if (existsSync(tsPath)) {
     try {
-      const mod = await import(tsPath);
+      const mod = await import(moduleSpecifier(tsPath, options.hotReload));
       return mod.default ?? null;
     } catch {
       return null;

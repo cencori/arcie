@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync } from "node:fs";
+import { existsSync, watch, type FSWatcher } from "node:fs";
 import { join, resolve } from "node:path";
 import { discoverAgents, loadAgent, loadAgentById } from "../loader";
 import { discoverAgent } from "../discover/index";
@@ -206,20 +206,22 @@ export async function devCommand(options: DevOptions): Promise<void> {
         res.end(JSON.stringify({ error: "message is required" }));
         return;
       }
+      const runOpts = {
+        hotReload: true,
+        ...(agentId !== undefined ? { agentId } : {}),
+      };
       if (stream) {
         res.writeHead(200, {
           "Content-Type": "application/x-ndjson",
           "Cache-Control": "no-cache",
           Connection: "keep-alive",
         });
-        const runOpts = agentId !== undefined ? { agentId } : {};
         for await (const event of streamAgent(agentDirPath, message, runOpts)) {
           res.write(JSON.stringify(event) + "\n");
         }
         res.end();
       } else {
         res.writeHead(200, { "Content-Type": "application/json" });
-        const runOpts = agentId !== undefined ? { agentId } : {};
         for await (const _event of streamAgent(agentDirPath, message, runOpts)) {}
         res.end(JSON.stringify({ status: "ok" }));
       }
@@ -234,7 +236,7 @@ export async function devCommand(options: DevOptions): Promise<void> {
     const summaries = await Promise.all(
       discovered.map(async ({ id }) => {
         try {
-          const loaded = await loadAgentById(agentDirPath, id);
+          const loaded = await loadAgentById(agentDirPath, id, { hotReload: true });
           const { config } = loaded.manifest;
           return {
             id,
@@ -359,12 +361,39 @@ export async function devCommand(options: DevOptions): Promise<void> {
   }
 
   if (!options.input) {
+    console.log(`  ${dimmed("hot reload  edits to agent/*.ts land on the next request")}`);
     console.log();
     console.log(`  ${dimmed("Ctrl+C to stop")}`);
     console.log();
   }
 
+  // Watch the agent dir so we can log which file changed. Actual reload
+  // happens in the loader (cache-busted import per request) — the watcher
+  // is purely informational.
+  let watcher: FSWatcher | undefined;
+  try {
+    let debounce: ReturnType<typeof setTimeout> | undefined;
+    const seen = new Set<string>();
+    watcher = watch(agentDirPath, { recursive: true }, (_event, filename) => {
+      if (typeof filename !== "string") return;
+      if (!filename.endsWith(".ts") && !filename.endsWith(".md")) return;
+      seen.add(filename);
+      if (debounce !== undefined) clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        const files = [...seen].sort();
+        seen.clear();
+        for (const file of files) {
+          console.log(`  ${dimmed(`reload · ${file}`)}`);
+        }
+      }, 150);
+    });
+  } catch {
+    // Some sandboxes don't support fs.watch — hot reload still works,
+    // we just can't log which file changed.
+  }
+
   const shutdown = () => {
+    watcher?.close();
     if (webChannel !== undefined) webChannel.process.kill();
     server.close();
     process.exit(0);
