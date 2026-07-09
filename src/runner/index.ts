@@ -48,7 +48,7 @@ function truncateBody(body: string): string {
   return body;
 }
 
-const DEFAULT_ENDPOINT = "https://cencori.com/v1";
+const DEFAULT_ENDPOINT = "https://cencori.com/api/v1";
 
 async function createChildSession(
   endpoint: string,
