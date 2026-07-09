@@ -1,9 +1,21 @@
+import { streamAgent } from "arcie/runner";
 import { NextRequest } from "next/server";
+import { resolve } from "node:path";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const ARCIE_URL = process.env.ARCIE_URL ?? "http://localhost:3000";
+/**
+ * Where the agent directory lives, resolved to an absolute path.
+ *
+ * - In dev: `arcie dev` sets `ARCIE_AGENT_DIR` when spawning `next dev`.
+ * - In prod: set `ARCIE_AGENT_DIR` on your host (or bundle agent/ into
+ *   this Next.js app and adjust the fallback).
+ *
+ * Fallback assumes the standard `channels/web/` layout under a project
+ * root — i.e. `../../agent` relative to this app's cwd.
+ */
+const AGENT_DIR = process.env.ARCIE_AGENT_DIR ?? resolve(process.cwd(), "../../agent");
 
 export async function POST(req: NextRequest) {
   const { message, agentId } = (await req.json()) as {
@@ -14,34 +26,34 @@ export async function POST(req: NextRequest) {
     return new Response("message required", { status: 400 });
   }
 
-  const target =
-    typeof agentId === "string" && agentId.length > 0
-      ? `${ARCIE_URL}/agents/${encodeURIComponent(agentId)}`
-      : ARCIE_URL;
+  const encoder = new TextEncoder();
+  const runOpts = {
+    hotReload: true,
+    ...(typeof agentId === "string" && agentId.length > 0 ? { agentId } : {}),
+  };
 
-  let upstream: Response;
-  try {
-    upstream = await fetch(target, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, stream: true }),
-    });
-  } catch (error) {
-    return Response.json(
-      {
-        error: "Could not reach arcie server",
-        detail: error instanceof Error ? error.message : String(error),
-        hint: `Is arcie running at ${ARCIE_URL}? Start it with \`arcie dev\` in the agent directory.`,
-      },
-      { status: 502 },
-    );
-  }
+  const stream = new ReadableStream({
+    async start(controller) {
+      try {
+        for await (const event of streamAgent(AGENT_DIR, message, runOpts)) {
+          controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+        }
+      } catch (error) {
+        const errorEvent = {
+          type: "session.failed",
+          data: {
+            code: "runtime_error",
+            message: error instanceof Error ? error.message : String(error),
+          },
+        };
+        controller.enqueue(encoder.encode(JSON.stringify(errorEvent) + "\n"));
+      } finally {
+        controller.close();
+      }
+    },
+  });
 
-  if (!upstream.ok || upstream.body === null) {
-    return new Response(await upstream.text(), { status: upstream.status });
-  }
-
-  return new Response(upstream.body, {
+  return new Response(stream, {
     headers: {
       "Content-Type": "application/x-ndjson",
       "Cache-Control": "no-cache, no-transform",

@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync, watch, type FSWatcher } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { discoverAgents, loadAgent, loadAgentById } from "../loader";
 import { discoverAgent } from "../discover/index";
 import { streamAgent } from "../runner/index";
@@ -153,10 +153,10 @@ async function installWebDeps(webDir: string): Promise<boolean> {
 
 async function startWebChannel(
   agentDir: string,
-  arcieUrl: string,
   webPort: number,
 ): Promise<WebChannelHandle | undefined> {
-  const webDir = join(agentDir, "channels", "web");
+  const projectRoot = dirname(agentDir);
+  const webDir = join(projectRoot, "channels", "web");
   if (!existsSync(join(webDir, "package.json"))) return undefined;
 
   if (!existsSync(join(webDir, "node_modules"))) {
@@ -171,9 +171,12 @@ async function startWebChannel(
     }
   }
 
+  // ARCIE_AGENT_DIR points the Next.js /api/chat route at the agent
+  // files it should run. streamAgent() is called in-process now — no
+  // proxying, no separate arcie HTTP server.
   const child = spawn("npm", ["run", "dev", "--", "--port", String(webPort)], {
     cwd: webDir,
-    env: { ...process.env, ARCIE_URL: arcieUrl },
+    env: { ...process.env, ARCIE_AGENT_DIR: agentDir },
     stdio: "ignore",
     detached: false,
   });
@@ -194,6 +197,83 @@ export async function devCommand(options: DevOptions): Promise<void> {
   const agentDirPath = resolve(process.cwd(), options.agentDir);
   const requestedPort = parseInt(options.port, 10);
 
+  if (!process.env.CENCORI_API_KEY) process.env.CENCORI_API_KEY = "local-dev-key";
+
+  showHeader();
+
+  const { diagnostics } = discoverAgent(agentDirPath);
+  if (diagnostics.some((d) => d.severity === "error")) {
+    for (const d of diagnostics) console.error(`  ${grey("✖")} ${d.code}: ${d.message}`);
+    process.exit(1);
+  }
+  for (const d of diagnostics) console.warn(`  ${grey("⚠")} ${d.code}: ${d.message}`);
+
+  let modelLine = agentDirPath;
+  let missingKeys: string[] = [];
+  try {
+    const agent = await loadAgent(agentDirPath);
+    modelLine = `${agentDirPath} ${grey("\xB7")} ${grey(agent.manifest.config.model)}`;
+    missingKeys = checkProviderKeys(agent.manifest.config.model);
+  } catch {
+    /* fall through — dev still runs, /api/chat will error clearly */
+  }
+  console.log(`  ${modelLine}`);
+  console.log();
+
+  const projectRoot = dirname(agentDirPath);
+  const webDir = join(projectRoot, "channels", "web");
+  const hasWeb = existsSync(webDir);
+  const wantsWeb = !options.input && options.noWeb !== true && hasWeb;
+
+  // ── Web-attached mode: one process, one port. Next.js owns /api/chat
+  //    and calls streamAgent() in-process. No proxy, no separate arcie HTTP.
+  if (wantsWeb) {
+    let webPort: number;
+    try {
+      webPort = await findFreePort(requestedPort);
+    } catch (err) {
+      console.error(`  ${grey("✗")} ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+    if (webPort !== requestedPort) {
+      console.log(`  ${grey("!")} port ${requestedPort} was in use ${grey("\xB7")} using ${webPort}`);
+      console.log();
+    }
+    console.log(`  ${dimmed(`starting on http://localhost:${webPort}…`)}`);
+    const webChannel = await startWebChannel(agentDirPath, webPort);
+    if (webChannel === undefined) {
+      console.log(`  ${grey("⚠")} web channel failed to start`);
+      process.exit(1);
+    }
+    console.log(`  ${dimmed(`web    http://localhost:${webPort}`)}`);
+    console.log(`  ${dimmed(`api    http://localhost:${webPort}/api/chat`)}`);
+    if (missingKeys.length > 0) {
+      console.log();
+      console.log(`  ${grey("⚠")} Missing API keys: ${missingKeys.join(", ")}`);
+      console.log(`  ${dimmed("  Set them in .env.local or your environment")}`);
+    }
+    console.log();
+    console.log(`  ${dimmed("hot reload  edits to agent/*.ts land on the next request")}`);
+    console.log();
+    console.log(`  ${dimmed("Ctrl+C to stop")}`);
+    console.log();
+
+    if (options.noOpen !== true) openBrowser(webChannel.url);
+
+    const watcher = startAgentWatcher(agentDirPath);
+    const shutdown = () => {
+      watcher?.close();
+      webChannel.process.kill();
+      process.exit(0);
+    };
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+    return;
+  }
+
+  // ── JSON-only mode: no channels/web/. Standalone HTTP server for
+  //    curl users, tests, and other connectors that hit the agent
+  //    directly (Slack, WhatsApp bots, etc. down the line).
   const streamTurn = async (
     res: import("node:http").ServerResponse,
     body: string,
@@ -233,7 +313,7 @@ export async function devCommand(options: DevOptions): Promise<void> {
 
   const listAgents = async () => {
     const discovered = discoverAgents(agentDirPath);
-    const summaries = await Promise.all(
+    return Promise.all(
       discovered.map(async ({ id }) => {
         try {
           const loaded = await loadAgentById(agentDirPath, id, { hotReload: true });
@@ -249,7 +329,6 @@ export async function devCommand(options: DevOptions): Promise<void> {
         }
       }),
     );
-    return summaries;
   };
 
   const server = createServer(async (req, res) => {
@@ -275,7 +354,6 @@ export async function devCommand(options: DevOptions): Promise<void> {
     if (method === "POST" && url === "/") {
       let body = "";
       for await (const chunk of req) body += chunk;
-      // Route bare POST / to the primary agent for backward compatibility.
       await streamTurn(res, body, undefined);
       return;
     }
@@ -295,86 +373,50 @@ export async function devCommand(options: DevOptions): Promise<void> {
     process.exit(1);
   }
 
-  const localApiUrl = `http://127.0.0.1:${boundPort}/v1`;
-  if (!process.env.CENCORI_API_KEY) process.env.CENCORI_API_KEY = "local-dev-key";
-  if (!process.env.CENCORI_API_URL) process.env.CENCORI_API_URL = localApiUrl;
-
-  if (!options.input) {
-    showHeader();
-
-    const { diagnostics } = discoverAgent(agentDirPath);
-
-    if (diagnostics.some((d) => d.severity === "error")) {
-      for (const d of diagnostics) {
-        console.error(`  ${grey("✖")} ${d.code}: ${d.message}`);
-      }
-      process.exit(1);
-    }
-
-    for (const d of diagnostics) {
-      console.warn(`  ${grey("⚠")} ${d.code}: ${d.message}`);
-    }
-
-    try {
-      const agent = await loadAgent(agentDirPath);
-      console.log(`  ${agentDirPath} ${grey("\xB7")} ${grey(agent.manifest.config.model)}`);
-      console.log();
-      if (boundPort !== requestedPort) {
-        console.log(
-          `  ${grey("!")} port ${requestedPort} was in use ${grey("\xB7")} using ${boundPort}`,
-        );
-        console.log();
-      }
-      console.log(`  ${dimmed(`agent  http://localhost:${boundPort}`)}`);
-
-      const missing = checkProviderKeys(agent.manifest.config.model);
-      if (missing.length > 0) {
-        console.log();
-        console.log(`  ${grey("⚠")} Missing API keys: ${missing.join(", ")}`);
-        console.log(`  ${dimmed("  Set them in .env.local or your environment")}`);
-      }
-    } catch {
-      console.log(`  ${agentDirPath}`);
-      console.log();
-      console.log(`  ${dimmed(`agent  http://localhost:${boundPort}`)}`);
-    }
+  if (!process.env.CENCORI_API_URL) {
+    process.env.CENCORI_API_URL = `http://127.0.0.1:${boundPort}/v1`;
   }
 
-  let webChannel: WebChannelHandle | undefined;
-  if (!options.input && options.noWeb !== true) {
-    const webDir = join(agentDirPath, "channels", "web");
-    if (existsSync(webDir)) {
-      try {
-        const webPort = await findFreePort(3001);
-        console.log(`  ${dimmed(`web    starting on http://localhost:${webPort}…`)}`);
-        webChannel = await startWebChannel(agentDirPath, `http://localhost:${boundPort}`, webPort);
-        if (webChannel !== undefined) {
-          console.log(`  ${dimmed(`web    http://localhost:${webPort}`)}`);
-          if (options.noOpen !== true) openBrowser(webChannel.url);
-        }
-      } catch (err) {
-        console.log(
-          `  ${grey("⚠")} could not start web channel: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-  }
-
-  if (!options.input) {
-    console.log(`  ${dimmed("hot reload  edits to agent/*.ts land on the next request")}`);
-    console.log();
-    console.log(`  ${dimmed("Ctrl+C to stop")}`);
+  if (boundPort !== requestedPort) {
+    console.log(`  ${grey("!")} port ${requestedPort} was in use ${grey("\xB7")} using ${boundPort}`);
     console.log();
   }
+  console.log(`  ${dimmed(`agent  http://localhost:${boundPort}`)}`);
+  if (missingKeys.length > 0) {
+    console.log();
+    console.log(`  ${grey("⚠")} Missing API keys: ${missingKeys.join(", ")}`);
+    console.log(`  ${dimmed("  Set them in .env.local or your environment")}`);
+  }
+  console.log();
+  console.log(`  ${dimmed("hot reload  edits to agent/*.ts land on the next request")}`);
+  console.log();
+  console.log(`  ${dimmed("Ctrl+C to stop")}`);
+  console.log();
 
-  // Watch the agent dir so we can log which file changed. Actual reload
-  // happens in the loader (cache-busted import per request) — the watcher
-  // is purely informational.
-  let watcher: FSWatcher | undefined;
+  const watcher = startAgentWatcher(agentDirPath);
+  const shutdown = () => {
+    watcher?.close();
+    server.close();
+    process.exit(0);
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+
+  if (options.input) {
+    void startBlockChat({ agentDir: agentDirPath });
+  }
+}
+
+/**
+ * Watches the agent directory for `.ts` / `.md` changes and logs which files
+ * changed. Actual hot-reload happens in the loader (cache-busted import per
+ * request) — the watcher is purely informational.
+ */
+function startAgentWatcher(agentDirPath: string): FSWatcher | undefined {
   try {
     let debounce: ReturnType<typeof setTimeout> | undefined;
     const seen = new Set<string>();
-    watcher = watch(agentDirPath, { recursive: true }, (_event, filename) => {
+    return watch(agentDirPath, { recursive: true }, (_event, filename) => {
       if (typeof filename !== "string") return;
       if (!filename.endsWith(".ts") && !filename.endsWith(".md")) return;
       seen.add(filename);
@@ -388,20 +430,6 @@ export async function devCommand(options: DevOptions): Promise<void> {
       }, 150);
     });
   } catch {
-    // Some sandboxes don't support fs.watch — hot reload still works,
-    // we just can't log which file changed.
-  }
-
-  const shutdown = () => {
-    watcher?.close();
-    if (webChannel !== undefined) webChannel.process.kill();
-    server.close();
-    process.exit(0);
-  };
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
-
-  if (options.input) {
-    void startBlockChat({ agentDir: agentDirPath });
+    return undefined;
   }
 }

@@ -3,12 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --port 3001",
+    "dev": "next dev --turbopack --port 3001",
     "build": "next build",
     "start": "next start --port 3001",
     "lint": "next lint"
   },
   "dependencies": {
+    "arcie": "*",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "lucide-react": "^0.475.0",
