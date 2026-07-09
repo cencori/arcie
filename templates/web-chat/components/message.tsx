@@ -3,7 +3,7 @@
 import * as React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertTriangle, Copy, RotateCcw } from "lucide-react";
+import { AlertTriangle, Check, Copy, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { UiMessage } from "@/lib/types";
 import { ToolCall } from "@/components/tool-call";
@@ -17,6 +17,14 @@ interface MessageProps {
 
 export function Message({ message, isLast, onCopy, onRegenerate }: MessageProps) {
   const isUser = message.role === "user";
+  const [copied, setCopied] = React.useState(false);
+
+  const handleCopy = () => {
+    if (onCopy === undefined) return;
+    onCopy(message.content);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
 
   if (isUser) {
     return (
@@ -90,19 +98,23 @@ export function Message({ message, isLast, onCopy, onRegenerate }: MessageProps)
 
         {!message.streaming && message.content.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5 pt-1">
-            {message.latencyMs !== undefined && (
-              <span className="h-5 rounded border border-border/30 bg-muted/5 px-1.5 font-mono text-[9px] text-muted-foreground/70">
-                {message.latencyMs}ms
-              </span>
-            )}
             {onCopy && (
               <button
                 type="button"
-                onClick={() => onCopy(message.content)}
-                className="h-6 w-6 flex items-center justify-center rounded text-muted-foreground/60 hover:text-foreground hover:bg-muted/30 transition-colors"
-                title="Copy to clipboard"
+                onClick={handleCopy}
+                className={cn(
+                  "h-6 w-6 flex items-center justify-center rounded transition-colors",
+                  copied
+                    ? "text-emerald-400"
+                    : "text-muted-foreground/60 hover:text-foreground hover:bg-muted/30",
+                )}
+                title={copied ? "Copied" : "Copy to clipboard"}
               >
-                <Copy className="h-3 w-3" />
+                {copied ? (
+                  <Check className="h-3 w-3 animate-in fade-in zoom-in-75 duration-150" />
+                ) : (
+                  <Copy className="h-3 w-3" />
+                )}
               </button>
             )}
             {isLast && onRegenerate && (
