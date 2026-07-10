@@ -13,9 +13,11 @@ interface MessageProps {
   isLast?: boolean;
   onCopy?(text: string): void;
   onRegenerate?(): void;
+  onApprove?(): void;
+  onDeny?(): void;
 }
 
-export function Message({ message, isLast, onCopy, onRegenerate }: MessageProps) {
+export function Message({ message, isLast, onCopy, onRegenerate, onApprove, onDeny }: MessageProps) {
   const isUser = message.role === "user";
   const [copied, setCopied] = React.useState(false);
 
@@ -91,7 +93,7 @@ export function Message({ message, isLast, onCopy, onRegenerate }: MessageProps)
         {message.toolCalls && message.toolCalls.length > 0 && (
           <div className="flex flex-col gap-1.5">
             {message.toolCalls.map((call) => (
-              <ToolCall key={call.callId} call={call} />
+              <ToolCall key={call.callId} call={call} onApprove={onApprove} onDeny={onDeny} />
             ))}
           </div>
         )}

@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { CheckCircle2, Loader2, XCircle, HelpCircle } from "lucide-react";
+import { Ban, Bot, CheckCircle2, Loader2, XCircle, HelpCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { UiToolCall } from "@/lib/types";
 
@@ -24,6 +24,7 @@ function summarize(input: unknown, max = 60): string {
 
 function resultText(call: UiToolCall): string | undefined {
   if (call.status === "error") return call.errorMessage;
+  if (call.status === "denied") return "denied by user";
   if (call.status === "approval") return call.errorMessage ?? "awaiting approval";
   if (call.output === undefined || call.output === null) return undefined;
   if (typeof call.output === "string") {
@@ -38,18 +39,32 @@ function resultText(call: UiToolCall): string | undefined {
   return undefined;
 }
 
-export function ToolCall({ call }: { call: UiToolCall }) {
+interface ToolCallProps {
+  call: UiToolCall;
+  onApprove?(): void;
+  onDeny?(): void;
+}
+
+export function ToolCall({ call, onApprove, onDeny }: ToolCallProps) {
   const args = summarize(call.input);
   const result = resultText(call);
+  const awaitingApproval = call.status === "approval";
   return (
     <div
       className={cn(
         "flex flex-col gap-1 rounded-lg border border-border/30 bg-muted/10 px-3 py-2 text-xs",
+        awaitingApproval && "border-amber-500/40",
       )}
     >
       <div className="flex items-center gap-2">
         <StatusGlyph status={call.status} />
         <span className="font-mono font-medium text-[11px]">{call.name}</span>
+        {call.kind === "subagent" && (
+          <span className="inline-flex items-center gap-1 rounded bg-muted/40 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">
+            <Bot className="h-2.5 w-2.5" />
+            subagent
+          </span>
+        )}
         {args.length > 0 && (
           <span className="truncate font-mono text-[10px] text-muted-foreground/70">{args}</span>
         )}
@@ -57,6 +72,24 @@ export function ToolCall({ call }: { call: UiToolCall }) {
       {result !== undefined && (
         <div className="ml-6 truncate text-[10px] text-muted-foreground/70">
           → <span className="font-mono">{result}</span>
+        </div>
+      )}
+      {awaitingApproval && onApprove && onDeny && (
+        <div className="ml-6 mt-1 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onApprove}
+            className="rounded bg-emerald-600/90 px-2.5 py-1 text-[10px] font-medium text-white transition-colors hover:bg-emerald-600"
+          >
+            Approve
+          </button>
+          <button
+            type="button"
+            onClick={onDeny}
+            className="rounded border border-border/50 px-2.5 py-1 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground"
+          >
+            Deny
+          </button>
         </div>
       )}
     </div>
@@ -73,6 +106,8 @@ function StatusGlyph({ status }: { status: UiToolCall["status"] }) {
       return <XCircle className="h-3.5 w-3.5 text-destructive" />;
     case "approval":
       return <HelpCircle className="h-3.5 w-3.5 text-amber-500" />;
+    case "denied":
+      return <Ban className="h-3.5 w-3.5 text-muted-foreground" />;
     default:
       return null;
   }

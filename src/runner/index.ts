@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { loadAgent, loadAgentById, type LoadedAgent } from "../loader";
 import { toModelOutput } from "../tools/index";
 import { Memory } from "../memory/index";
-import type { TurnContext, ToolCallContext, ApprovalStrategy } from "../types";
+import type { TurnContext, ToolCallContext, ApprovalStrategy, ToolConfig } from "../types";
 import {
   createSessionStarted, createTurnStarted, createMessageReceived,
   createMessageAppended, createMessageCompleted, createStepStarted,
@@ -64,6 +64,22 @@ export interface RunOptions {
    * `arcie dev` sets this to true by default. Not for production.
    */
   hotReload?: boolean;
+  /**
+   * Resume a session that paused for tool approval. Provide the paused
+   * calls (from the tool.started events) with the user's verdict:
+   * approved calls execute locally, denied calls return a refusal to the
+   * model, and the turn continues. Requires `sessionId`; `input` is
+   * ignored on a resumed turn.
+   */
+  resume?: { toolCalls: ResumeToolCall[] };
+}
+
+export interface ResumeToolCall {
+  /** The action_id from the tool.started event's callId. */
+  actionId: string;
+  name: string;
+  args: unknown;
+  approved: boolean;
 }
 
 export interface RunResult {
@@ -123,7 +139,13 @@ async function executeSubagent(
 ): Promise<string> {
   const sub = agent.manifest.subagents[subagentId];
   childSessionId ??= await createChildSession(endpoint, apiKey, agent, subagentId);
-  const inputStr = typeof input === "string" ? input : JSON.stringify(input);
+  // The orchestrator calls subagents as functions with an { input } arg;
+  // unwrap it so the child session gets the bare task text.
+  const inputStr = typeof input === "string"
+    ? input
+    : input !== null && typeof input === "object" && typeof (input as { input?: unknown }).input === "string"
+      ? (input as { input: string }).input
+      : JSON.stringify(input);
   const tools = Object.entries(sub.tools).map(([name, tool]) =>
     toModelOutput(name, tool)
   );
@@ -424,6 +446,104 @@ async function* readTurnSSE(
   return { status: "completed", text: textSoFar } as TurnResult;
 }
 
+// ── Tool execution ────────────────────────────────────────────────
+
+type PendingToolCall = { name: string; args: unknown; actionId: string; denied?: boolean };
+
+type ToolBatchOutcome = {
+  toolResults: Array<{ action_id: string; output: string }>;
+  needsUserApproval: boolean;
+};
+
+type ToolExecutionContext = {
+  agent: LoadedAgent;
+  memoryTools: Record<string, ToolConfig>;
+  approvedTools: Set<string>;
+  allToolCalls: { tool: string; input: unknown; output: unknown }[];
+  endpoint: string;
+  apiKey: string;
+  turnId: string;
+  bypassApproval: boolean;
+};
+
+/**
+ * Executes one batch of model-requested tool calls, yielding progress
+ * events. Approval strategies are enforced unless `bypassApproval` is
+ * set (used on resume, when the user has already ruled on each call);
+ * calls marked `denied` are not executed and report a refusal back to
+ * the model instead.
+ */
+async function* executeToolCalls(
+  calls: PendingToolCall[],
+  ctx: ToolExecutionContext,
+): AsyncGenerator<StreamEvent, ToolBatchOutcome, unknown> {
+  const { agent, memoryTools, approvedTools, allToolCalls, endpoint, apiKey, turnId } = ctx;
+  const toolResults: Array<{ action_id: string; output: string }> = [];
+  let needsUserApproval = false;
+
+  for (const tc of calls) {
+    const toolDef = agent.manifest.tools[tc.name] ?? memoryTools[tc.name];
+    const subDef = agent.manifest.subagents[tc.name];
+    const strategy: ApprovalStrategy | undefined = toolDef?.needsApproval;
+
+    if (tc.denied) {
+      const msg = `User declined to run tool "${tc.name}".`;
+      yield createToolCallCompleted(tc.name, msg, tc.actionId, "rejected",
+        { code: "user_rejected", message: msg }, 1, 0, turnId);
+      toolResults.push({ action_id: tc.actionId, output: msg });
+      allToolCalls.push({ tool: tc.name, input: tc.args, output: msg });
+      continue;
+    }
+
+    if (!ctx.bypassApproval && (strategy === "always" || (strategy === "once" && !approvedTools.has(tc.name)))) {
+      needsUserApproval = true;
+      yield createToolCallCompleted(tc.name, null, tc.actionId, "pending",
+        { code: "needs_approval", message: `Tool "${tc.name}" requires approval` }, 1, 0, turnId);
+      continue;
+    }
+
+    if (strategy === "once") approvedTools.add(tc.name);
+
+    if (toolDef?.execute) {
+      try {
+        const output = await toolDef.execute(tc.args);
+        const outputStr = typeof output === "string" ? output : JSON.stringify(output);
+        yield createToolCallCompleted(tc.name, outputStr, tc.actionId, "completed", undefined, 1, 0, turnId);
+        toolResults.push({ action_id: tc.actionId, output: outputStr });
+        allToolCalls.push({ tool: tc.name, input: tc.args, output });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Tool execution failed";
+        yield createToolCallCompleted(tc.name, msg, tc.actionId, "failed", { code: "execution_error", message: msg }, 1, 0, turnId);
+        toolResults.push({ action_id: tc.actionId, output: `Error: ${msg}` });
+        allToolCalls.push({ tool: tc.name, input: tc.args, output: `Error: ${msg}` });
+      }
+    } else if (subDef) {
+      const callId = tc.actionId;
+      try {
+        const childSessionId = await createChildSession(endpoint, apiKey, agent, tc.name);
+        yield createSubagentCalled(tc.name, callId, childSessionId, turnId);
+        const output = await executeSubagent(endpoint, apiKey, agent, tc.name, tc.args, childSessionId);
+        yield createSubagentCompleted(tc.name, callId, output);
+        yield createToolCallCompleted(tc.name, output, tc.actionId, "completed", undefined, 1, 0, turnId);
+        toolResults.push({ action_id: tc.actionId, output });
+        allToolCalls.push({ tool: tc.name, input: tc.args, output });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Subagent execution failed";
+        yield createSubagentCompleted(tc.name, callId, `Error: ${msg}`);
+        yield createToolCallCompleted(tc.name, msg, tc.actionId, "failed", { code: "execution_error", message: msg }, 1, 0, turnId);
+        toolResults.push({ action_id: tc.actionId, output: `Error: ${msg}` });
+        allToolCalls.push({ tool: tc.name, input: tc.args, output: `Error: ${msg}` });
+      }
+    } else {
+      yield createToolCallCompleted(tc.name, "Tool not found in agent manifest", tc.actionId, "failed", { code: "tool_not_found", message: `Tool "${tc.name}" not defined in agent` }, 1, 0, turnId);
+      toolResults.push({ action_id: tc.actionId, output: "Error: tool not defined" });
+      allToolCalls.push({ tool: tc.name, input: tc.args, output: "Error: tool not defined" });
+    }
+  }
+
+  return { toolResults, needsUserApproval };
+}
+
 // ── Multi-turn agent loop ─────────────────────────────────────────
 
 export async function* streamAgent(
@@ -457,9 +577,26 @@ export async function* streamAgent(
     : null;
   const memoryTools = memory ? memory.getToolDefinitions() : {};
   const allTools = { ...agent.manifest.tools, ...memoryTools };
-  const tools = Object.entries(allTools).map(([name, tool]) =>
-    toModelOutput(name, tool)
-  );
+  // Subagents are callable like tools: advertise each as a function that
+  // takes the task to delegate. Execution routes through executeSubagent.
+  const subagentTools = Object.entries(agent.manifest.subagents).map(([name, sub]) => ({
+    type: "function" as const,
+    function: {
+      name,
+      description: sub.config.description ?? `Delegate a task to the "${name}" subagent.`,
+      parameters: {
+        type: "object",
+        properties: {
+          input: { type: "string", description: "The task or question to hand to the subagent" },
+        },
+        required: ["input"],
+      },
+    },
+  }));
+  const tools = [
+    ...Object.entries(allTools).map(([name, tool]) => toModelOutput(name, tool)),
+    ...subagentTools,
+  ];
   const memoryContext = memory ? await memory.getInputContext() : "";
   const memoryInstruction = memory ? memory.getSystemInstruction() : "";
   const instructions = [
@@ -477,18 +614,59 @@ export async function* streamAgent(
   const turnId = crypto.randomUUID();
   const maxToolLoops = options.maxTurns ?? 25;
 
-  let response = await fetch(`${endpoint}/sessions/${sessionId}/turns`, {
-    method: "POST",
-    headers: headers(apiKey, agent),
-    body: JSON.stringify({
-      model,
-      input,
-      instructions,
-      tools: tools.length > 0 ? tools : undefined,
-      stream: true,
-      pause_on_tool_calls: true,
-    }),
-  });
+  // Track tools approved via "once" strategy within this session
+  const approvedTools = new Set<string>();
+  const allToolCalls: { tool: string; input: unknown; output: unknown }[] = [];
+  const execCtx: ToolExecutionContext = {
+    agent, memoryTools, approvedTools, allToolCalls,
+    endpoint, apiKey, turnId, bypassApproval: false,
+  };
+
+  let response: Response;
+  if (options.resume) {
+    if (!options.sessionId) {
+      throw new Error("resume requires a sessionId");
+    }
+    // The user has ruled on each paused call: execute the approved ones
+    // (bypassing needsApproval — that's what the ruling was), report
+    // refusals for the denied ones, then hand the results to Cencori to
+    // continue the paused turn.
+    const calls: PendingToolCall[] = options.resume.toolCalls.map((tc) => ({
+      name: tc.name, args: tc.args, actionId: tc.actionId, denied: !tc.approved,
+    }));
+    const gen = executeToolCalls(calls, { ...execCtx, bypassApproval: true });
+    let it = await gen.next();
+    while (!it.done) {
+      yield it.value;
+      it = await gen.next();
+    }
+    const { toolResults } = it.value;
+    if (toolResults.length === 0) {
+      yield createSessionWaiting();
+      return;
+    }
+    response = await fetch(`${endpoint}/sessions/${sessionId}/approve`, {
+      method: "POST",
+      headers: headers(apiKey, agent),
+      body: JSON.stringify({
+        action_id: toolResults[0]!.action_id,
+        tool_results: toolResults,
+      }),
+    });
+  } else {
+    response = await fetch(`${endpoint}/sessions/${sessionId}/turns`, {
+      method: "POST",
+      headers: headers(apiKey, agent),
+      body: JSON.stringify({
+        model,
+        input,
+        instructions,
+        tools: tools.length > 0 ? tools : undefined,
+        stream: true,
+        pause_on_tool_calls: true,
+      }),
+    });
+  }
 
   if (!response.ok) {
     const error = await response.text();
@@ -496,10 +674,6 @@ export async function* streamAgent(
     yield createSessionCompleted();
     throw new Error(`Cencori Sessions API error (${response.status}): ${truncateBody(error)}`);
   }
-
-  // Track tools approved via "once" strategy within this session
-  const approvedTools = new Set<string>();
-  const allToolCalls: { tool: string; input: unknown; output: unknown }[] = [];
 
   // Tool call loop: pause → execute → approve → resume → repeat
   for (let loop = 0; loop < maxToolLoops; loop++) {
@@ -522,59 +696,13 @@ export async function* streamAgent(
 
     if (result.status !== "paused" || result.toolCalls.length === 0) break;
 
-    const toolResults: Array<{ action_id: string; output: string }> = [];
-    let needsUserApproval = false;
-
-    for (const tc of result.toolCalls) {
-      const toolDef = agent.manifest.tools[tc.name] ?? memoryTools[tc.name];
-      const subDef = agent.manifest.subagents[tc.name];
-      const strategy: ApprovalStrategy | undefined = toolDef?.needsApproval;
-
-      if (strategy === "always" || (strategy === "once" && !approvedTools.has(tc.name))) {
-        needsUserApproval = true;
-        yield createToolCallCompleted(tc.name, null, tc.actionId, "pending",
-          { code: "needs_approval", message: `Tool "${tc.name}" requires approval` }, 1, 0, turnId);
-        continue;
-      }
-
-      if (strategy === "once") approvedTools.add(tc.name);
-
-      if (toolDef?.execute) {
-        try {
-          const output = await toolDef.execute(tc.args);
-          const outputStr = typeof output === "string" ? output : JSON.stringify(output);
-          yield createToolCallCompleted(tc.name, outputStr, tc.actionId, "completed", undefined, 1, 0, turnId);
-          toolResults.push({ action_id: tc.actionId, output: outputStr });
-          allToolCalls.push({ tool: tc.name, input: tc.args, output });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "Tool execution failed";
-          yield createToolCallCompleted(tc.name, msg, tc.actionId, "failed", { code: "execution_error", message: msg }, 1, 0, turnId);
-          toolResults.push({ action_id: tc.actionId, output: `Error: ${msg}` });
-          allToolCalls.push({ tool: tc.name, input: tc.args, output: `Error: ${msg}` });
-        }
-      } else if (subDef) {
-        const callId = tc.actionId;
-        try {
-          const childSessionId = await createChildSession(endpoint, apiKey, agent, tc.name);
-          yield createSubagentCalled(tc.name, callId, childSessionId, turnId);
-          const output = await executeSubagent(endpoint, apiKey, agent, tc.name, tc.args, childSessionId);
-          yield createSubagentCompleted(tc.name, callId, output);
-          yield createToolCallCompleted(tc.name, output, tc.actionId, "completed", undefined, 1, 0, turnId);
-          toolResults.push({ action_id: tc.actionId, output });
-          allToolCalls.push({ tool: tc.name, input: tc.args, output });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "Subagent execution failed";
-          yield createSubagentCompleted(tc.name, callId, `Error: ${msg}`);
-          yield createToolCallCompleted(tc.name, msg, tc.actionId, "failed", { code: "execution_error", message: msg }, 1, 0, turnId);
-          toolResults.push({ action_id: tc.actionId, output: `Error: ${msg}` });
-          allToolCalls.push({ tool: tc.name, input: tc.args, output: `Error: ${msg}` });
-        }
-      } else {
-        yield createToolCallCompleted(tc.name, "Tool not found in agent manifest", tc.actionId, "failed", { code: "tool_not_found", message: `Tool "${tc.name}" not defined in agent` }, 1, 0, turnId);
-        toolResults.push({ action_id: tc.actionId, output: "Error: tool not defined" });
-        allToolCalls.push({ tool: tc.name, input: tc.args, output: "Error: tool not defined" });
-      }
+    const gen = executeToolCalls(result.toolCalls, execCtx);
+    let it = await gen.next();
+    while (!it.done) {
+      yield it.value;
+      it = await gen.next();
     }
+    const { toolResults, needsUserApproval } = it.value;
 
     if (needsUserApproval && toolResults.length === 0) {
       yield createSessionWaiting();

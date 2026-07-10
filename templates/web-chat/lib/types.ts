@@ -16,8 +16,17 @@ export interface UiToolCall {
   name: string;
   input?: unknown;
   output?: unknown;
-  status: "running" | "done" | "error" | "approval";
+  status: "running" | "done" | "error" | "approval" | "denied";
   errorMessage?: string;
+  /** Set when the call is handled by a subagent rather than a plain tool. */
+  kind?: "tool" | "subagent";
+}
+
+export interface AgentInfo {
+  id: string;
+  name: string;
+  model: string;
+  description: string;
 }
 
 export type ArcieStreamEvent =
@@ -54,6 +63,14 @@ export type ArcieStreamEvent =
         error?: { code: string; message: string };
         turnId: string;
       };
+    }
+  | {
+      type: "subagent.called";
+      data: { name: string; callId: string; childSessionId: string; turnId: string };
+    }
+  | {
+      type: "subagent.completed";
+      data: { name: string; callId: string; output: string };
     }
   | {
       type: "step.failed" | "turn.failed" | "session.failed";
