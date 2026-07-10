@@ -24,17 +24,7 @@ function checkProviderKeys(modelId: string): string[] {
   const provider = resolveProviderForModel(modelId);
   const missing: string[] = [];
 
-  const keyMap: Record<string, string> = {
-    openai: "OPENAI_API_KEY",
-    anthropic: "ANTHROPIC_API_KEY",
-    groq: "GROQ_API_KEY",
-    deepseek: "DEEPSEEK_API_KEY",
-    mistral: "MISTRAL_API_KEY",
-    google: "GOOGLE_API_KEY",
-    meta: "TOGETHER_API_KEY",
-  };
-
-  const envVar = keyMap[provider];
+  const envVar = PROVIDER_KEY_NAMES[provider];
   if (envVar && !process.env[envVar] && !getProviderApiKey(provider)) {
     missing.push(envVar);
   }
@@ -113,6 +103,104 @@ async function findFreePort(startPort: number, maxAttempts = MAX_PORT_ATTEMPTS, 
  * and the browser lands on the wrong server.
  */
 const LOCAL_GATEWAY_BASE_PORT = 41100;
+
+const CLOUD_ENDPOINT = "https://cencori.com/api/v1";
+
+const PROVIDER_KEY_NAMES: Record<string, string> = {
+  openai: "OPENAI_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+  groq: "GROQ_API_KEY",
+  deepseek: "DEEPSEEK_API_KEY",
+  mistral: "MISTRAL_API_KEY",
+  google: "GOOGLE_API_KEY",
+  meta: "TOGETHER_API_KEY",
+};
+
+function providerKeyName(provider: string): string {
+  return PROVIDER_KEY_NAMES[provider] ?? `${provider.toUpperCase()}_API_KEY`;
+}
+
+/** A real Cencori key, not the placeholder we inject for keyless local dev. */
+function hasCencoriKey(): boolean {
+  const key = process.env.CENCORI_API_KEY;
+  return typeof key === "string" && key.length > 0 && key !== "local-dev-key";
+}
+
+/** Reachable = any HTTP response at all; only network-level failures count as down. */
+async function isReachable(url: string, timeoutMs = 4000): Promise<boolean> {
+  try {
+    await fetch(url, { method: "GET", signal: AbortSignal.timeout(timeoutMs) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+interface EngineChoice {
+  mode: "explicit" | "cloud" | "local" | "failover" | "cloud-unreachable";
+  provider: string;
+}
+
+/**
+ * Decides which engine serves the agent loop. The product contract is:
+ * a CENCORI_API_KEY is the only key a user needs — models come from
+ * Cencori. So the cloud gateway is canonical whenever that key exists,
+ * and the local engine (direct provider calls) is either a BYOK mode
+ * for users without a Cencori key, or an automatic failover when
+ * cencori.com is unreachable and a provider key happens to be present.
+ * CENCORI_API_URL overrides everything.
+ */
+async function chooseEngine(agentModel: string): Promise<EngineChoice> {
+  const provider = agentModel ? resolveProviderForModel(agentModel) : "";
+  const providerKeyAvailable = provider !== "" && getProviderApiKey(provider) !== undefined;
+
+  if (process.env.CENCORI_API_URL) return { mode: "explicit", provider };
+
+  if (hasCencoriKey()) {
+    if (await isReachable(CLOUD_ENDPOINT)) return { mode: "cloud", provider };
+    if (providerKeyAvailable) return { mode: "failover", provider };
+    return { mode: "cloud-unreachable", provider };
+  }
+
+  if (providerKeyAvailable) return { mode: "local", provider };
+  return { mode: "cloud", provider };
+}
+
+function describeEngine(engine: EngineChoice): string {
+  switch (engine.mode) {
+    case "explicit":
+      return process.env.CENCORI_API_URL!;
+    case "cloud":
+    case "cloud-unreachable":
+      return `cencori cloud (cencori.com/api/v1)`;
+    case "failover":
+      return `local (${engine.provider} direct) ${grey("\xB7")} cloud failover`;
+    case "local":
+      return `local (${engine.provider} direct)`;
+  }
+}
+
+/**
+ * Boots the local sessions gateway on a loopback port and returns its
+ * base URL, or undefined when no port is available.
+ */
+async function startLocalGateway(): Promise<string | undefined> {
+  const gateway = createServer(async (req, res) => {
+    if (await handleSessionsRequest(req, res)) return;
+    res.writeHead(404);
+    res.end();
+  });
+  try {
+    const port = await findFreePort(LOCAL_GATEWAY_BASE_PORT, MAX_PORT_ATTEMPTS, "127.0.0.1");
+    await new Promise<void>((resolveListen, rejectListen) => {
+      gateway.once("error", rejectListen);
+      gateway.listen(port, "127.0.0.1", resolveListen);
+    });
+    return `http://127.0.0.1:${port}/v1`;
+  } catch {
+    return undefined;
+  }
+}
 
 function openBrowser(url: string): void {
   const command =
@@ -301,36 +389,23 @@ export async function devCommand(options: DevOptions): Promise<void> {
   //    Next.js also owns web port selection — the requested port is a hint,
   //    and we report whatever it actually bound.
   if (wantsWeb) {
-    // ── Engine selection: run the agent loop against the local engine
-    //    (direct provider calls, in-memory sessions) whenever a provider
-    //    key exists for the agent's model. The Cencori cloud gateway is
-    //    the fallback, not a hard dependency — the agent keeps working
-    //    when cencori.com is unreachable. Set CENCORI_API_URL to opt out.
-    let engineLabel = "cencori cloud (cencori.com/api/v1)";
-    if (!process.env.CENCORI_API_URL && agentModel) {
-      const provider = resolveProviderForModel(agentModel);
-      if (provider && getProviderApiKey(provider)) {
-        const gateway = createServer(async (req, res) => {
-          if (await handleSessionsRequest(req, res)) return;
-          res.writeHead(404);
-          res.end();
-        });
-        try {
-          const gatewayPort = await findFreePort(LOCAL_GATEWAY_BASE_PORT, MAX_PORT_ATTEMPTS, "127.0.0.1");
-          await new Promise<void>((resolveListen, rejectListen) => {
-            gateway.once("error", rejectListen);
-            gateway.listen(gatewayPort, "127.0.0.1", resolveListen);
-          });
-          process.env.CENCORI_API_URL = `http://127.0.0.1:${gatewayPort}/v1`;
-          engineLabel = `local (${provider} direct)`;
-        } catch {
-          /* fall back to cloud */
-        }
+    const engine = await chooseEngine(agentModel);
+    if (engine.mode === "local" || engine.mode === "failover") {
+      const started = await startLocalGateway();
+      if (started) {
+        process.env.CENCORI_API_URL = started;
+      } else {
+        engine.mode = "cloud";
       }
-    } else if (process.env.CENCORI_API_URL) {
-      engineLabel = process.env.CENCORI_API_URL;
     }
-    console.log(`  ${dimmed(`engine ${engineLabel}`)}`);
+    console.log(`  ${dimmed(`engine ${describeEngine(engine)}`)}`);
+    if (engine.mode === "failover") {
+      console.log(`  ${grey("!")} cencori.com unreachable ${grey("\xB7")} failing over to local ${engine.provider} until it's back`);
+    }
+    if (engine.mode === "cloud-unreachable") {
+      console.log(`  ${grey("⚠")} cencori.com is unreachable — requests will fail until it recovers`);
+      console.log(`  ${dimmed(`  (set ${engine.provider ? providerKeyName(engine.provider) : "a provider key"} in .env.local to fail over locally)`)}`);
+    }
 
     console.log(`  ${dimmed(`starting on http://localhost:${requestedPort}…`)}`);
     const webChannel = await startWebChannel(agentDirPath, requestedPort);
@@ -344,10 +419,12 @@ export async function devCommand(options: DevOptions): Promise<void> {
     }
     console.log(`  ${dimmed(`web    ${webChannel.url}`)}`);
     console.log(`  ${dimmed(`api    ${webChannel.url}/api/chat`)}`);
-    if (missingKeys.length > 0) {
+    // Provider keys are only the user's problem in BYOK mode — with a
+    // Cencori key, models come from Cencori and no other key is needed.
+    if (missingKeys.length > 0 && !hasCencoriKey()) {
       console.log();
       console.log(`  ${grey("⚠")} Missing API keys: ${missingKeys.join(", ")}`);
-      console.log(`  ${dimmed("  Set them in .env.local or your environment")}`);
+      console.log(`  ${dimmed("  Set them in .env.local, or set CENCORI_API_KEY to use Cencori models")}`);
     }
     console.log();
     console.log(`  ${dimmed("hot reload  edits to agent/*.ts land on the next request")}`);
@@ -470,8 +547,19 @@ export async function devCommand(options: DevOptions): Promise<void> {
     process.exit(1);
   }
 
-  if (!process.env.CENCORI_API_URL) {
+  // Same engine contract as web mode: a Cencori key means Cencori
+  // models — this process's built-in gateway only serves the loop in
+  // BYOK mode or as failover when cencori.com is unreachable.
+  const jsonEngine = await chooseEngine(agentModel);
+  if (!process.env.CENCORI_API_URL && (jsonEngine.mode === "local" || jsonEngine.mode === "failover")) {
     process.env.CENCORI_API_URL = `http://127.0.0.1:${boundPort}/v1`;
+  }
+  console.log(`  ${dimmed(`engine ${describeEngine(jsonEngine)}`)}`);
+  if (jsonEngine.mode === "failover") {
+    console.log(`  ${grey("!")} cencori.com unreachable ${grey("\xB7")} failing over to local ${jsonEngine.provider} until it's back`);
+  }
+  if (jsonEngine.mode === "cloud-unreachable") {
+    console.log(`  ${grey("⚠")} cencori.com is unreachable — requests will fail until it recovers`);
   }
 
   if (boundPort !== requestedPort) {
@@ -479,10 +567,10 @@ export async function devCommand(options: DevOptions): Promise<void> {
     console.log();
   }
   console.log(`  ${dimmed(`agent  http://localhost:${boundPort}`)}`);
-  if (missingKeys.length > 0) {
+  if (missingKeys.length > 0 && !hasCencoriKey()) {
     console.log();
     console.log(`  ${grey("⚠")} Missing API keys: ${missingKeys.join(", ")}`);
-    console.log(`  ${dimmed("  Set them in .env.local or your environment")}`);
+    console.log(`  ${dimmed("  Set them in .env.local, or set CENCORI_API_KEY to use Cencori models")}`);
   }
   console.log();
   console.log(`  ${dimmed("hot reload  edits to agent/*.ts land on the next request")}`);
