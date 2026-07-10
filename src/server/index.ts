@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { streamLlm, getProviderApiKey, type LlmMessage, type ToolResult } from "./llm";
+import { streamLlm, getProviderApiKey, resolveProviderForModel, type LlmMessage, type ToolResult } from "./llm";
 import type { ModelToolDefinition } from "../tools/index";
 
 interface Session {
@@ -114,6 +114,9 @@ async function handleTurn(
   const turnNumber = session.messages.filter((m) => m.role === "user").length + 1;
   const userMsg: LlmMessage = { role: "user", content: input };
   messages.push(userMsg);
+  // Persist into session history too, or every future turn loses the
+  // user's side of the conversation.
+  session.messages.push(userMsg);
 
   if (stream) {
     res.writeHead(200, {
@@ -341,4 +344,4 @@ async function handleApprove(
   return true;
 }
 
-export { getProviderApiKey };
+export { getProviderApiKey, resolveProviderForModel };

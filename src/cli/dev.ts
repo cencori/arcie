@@ -8,7 +8,7 @@ import { streamAgent } from "../runner/index";
 import { showHeader } from "./banner";
 import { grey, dimmed } from "./style";
 import { startBlockChat } from "./tui/renderer/start-block-chat";
-import { handleSessionsRequest, getProviderApiKey } from "../server/index";
+import { handleSessionsRequest, getProviderApiKey, resolveProviderForModel } from "../server/index";
 
 export interface DevOptions {
   port: string;
@@ -21,7 +21,7 @@ export interface DevOptions {
 }
 
 function checkProviderKeys(modelId: string): string[] {
-  const provider = modelId.split("/")[0];
+  const provider = resolveProviderForModel(modelId);
   const missing: string[] = [];
 
   const keyMap: Record<string, string> = {
@@ -220,8 +220,10 @@ export async function devCommand(options: DevOptions): Promise<void> {
 
   let modelLine = agentDirPath;
   let missingKeys: string[] = [];
+  let agentModel = "";
   try {
     const agent = await loadAgent(agentDirPath);
+    agentModel = agent.manifest.config.model;
     modelLine = `${agentDirPath} ${grey("\xB7")} ${grey(agent.manifest.config.model)}`;
     missingKeys = checkProviderKeys(agent.manifest.config.model);
   } catch {
@@ -249,6 +251,37 @@ export async function devCommand(options: DevOptions): Promise<void> {
       console.log(`  ${grey("!")} port ${requestedPort} was in use ${grey("\xB7")} using ${webPort}`);
       console.log();
     }
+    // ── Engine selection: run the agent loop against the local engine
+    //    (direct provider calls, in-memory sessions) whenever a provider
+    //    key exists for the agent's model. The Cencori cloud gateway is
+    //    the fallback, not a hard dependency — the agent keeps working
+    //    when cencori.com is unreachable. Set CENCORI_API_URL to opt out.
+    let engineLabel = "cencori cloud (cencori.com/api/v1)";
+    if (!process.env.CENCORI_API_URL && agentModel) {
+      const provider = resolveProviderForModel(agentModel);
+      if (provider && getProviderApiKey(provider)) {
+        const gateway = createServer(async (req, res) => {
+          if (await handleSessionsRequest(req, res)) return;
+          res.writeHead(404);
+          res.end();
+        });
+        try {
+          const gatewayPort = await findFreePort(webPort + 1);
+          await new Promise<void>((resolveListen, rejectListen) => {
+            gateway.once("error", rejectListen);
+            gateway.listen(gatewayPort, "127.0.0.1", resolveListen);
+          });
+          process.env.CENCORI_API_URL = `http://127.0.0.1:${gatewayPort}/v1`;
+          engineLabel = `local (${provider} direct)`;
+        } catch {
+          /* fall back to cloud */
+        }
+      }
+    } else if (process.env.CENCORI_API_URL) {
+      engineLabel = process.env.CENCORI_API_URL;
+    }
+    console.log(`  ${dimmed(`engine ${engineLabel}`)}`);
+
     console.log(`  ${dimmed(`starting on http://localhost:${webPort}…`)}`);
     const webChannel = await startWebChannel(agentDirPath, webPort);
     if (webChannel === undefined) {

@@ -565,7 +565,7 @@ export async function* streamAgent(
     );
   }
 
-  const sessionId = options.sessionId || await createSession(endpoint, apiKey, agent);
+  let sessionId = options.sessionId || await createSession(endpoint, apiKey, agent);
   const model = agent.manifest.config.model;
 
   const memory = agent.manifest.session?.memory
@@ -654,18 +654,42 @@ export async function* streamAgent(
       }),
     });
   } else {
-    response = await fetch(`${endpoint}/sessions/${sessionId}/turns`, {
-      method: "POST",
-      headers: headers(apiKey, agent),
-      body: JSON.stringify({
-        model,
-        input,
-        instructions,
-        tools: tools.length > 0 ? tools : undefined,
-        stream: true,
-        pause_on_tool_calls: true,
-      }),
-    });
+    const postTurn = (sid: string) =>
+      fetch(`${endpoint}/sessions/${sid}/turns`, {
+        method: "POST",
+        headers: headers(apiKey, agent),
+        body: JSON.stringify({
+          model,
+          input,
+          instructions,
+          tools: tools.length > 0 ? tools : undefined,
+          stream: true,
+          pause_on_tool_calls: true,
+        }),
+      });
+
+    response = await postTurn(sessionId);
+
+    // A caller-supplied sessionId can point at a session that has been
+    // closed or expired server-side. Rather than surfacing a 409 to the
+    // user, transparently start a fresh session and retry once; the new
+    // session.started event lets clients update their stored id.
+    if (response.status === 409 && options.sessionId) {
+      const body = await response.text();
+      if (body.includes("session_not_active")) {
+        sessionId = await createSession(endpoint, apiKey, agent);
+        yield createSessionStarted(sessionId, {
+          agentId: agent.manifest.config.name ?? "unnamed",
+          modelId: model,
+          arcieVersion: ARCIE_VERSION,
+        });
+        response = await postTurn(sessionId);
+      } else {
+        yield createTurnCompleted(1, turnId);
+        yield createSessionCompleted();
+        throw new Error(`Cencori Sessions API error (409): ${truncateBody(body)}`);
+      }
+    }
   }
 
   if (!response.ok) {

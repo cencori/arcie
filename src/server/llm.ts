@@ -36,10 +36,36 @@ const PROVIDERS: Record<string, ProviderConfig> = {
   },
 };
 
+/**
+ * Infers the provider for bare model ids (no "provider/" prefix), the
+ * way gateways route them. Keeps `defineAgent({ model: "llama-3.3-70b-versatile" })`
+ * working against direct provider APIs, not just Cencori.
+ */
+const BARE_MODEL_PROVIDERS: Array<[RegExp, string]> = [
+  [/^(gpt-|o[0-9])/, "openai"],
+  [/^claude-/, "anthropic"],
+  [/^gemini-/, "google"],
+  [/^deepseek-/, "deepseek"],
+  [/^(mistral-|codestral)/, "mistral"],
+  [/^(llama-|qwen|kimi|moonshot|gemma)/, "groq"],
+];
+
+function inferProvider(model: string): string {
+  for (const [pattern, provider] of BARE_MODEL_PROVIDERS) {
+    if (pattern.test(model)) return provider;
+  }
+  return "";
+}
+
 function parseModelId(modelId: string): { provider: string; model: string } {
   const slash = modelId.indexOf("/");
-  if (slash === -1) return { provider: "", model: modelId };
+  if (slash === -1) return { provider: inferProvider(modelId), model: modelId };
   return { provider: modelId.slice(0, slash), model: modelId.slice(slash + 1) };
+}
+
+/** Resolves which provider serves a model id ("groq" for "llama-3.3-70b-versatile"). */
+export function resolveProviderForModel(modelId: string): string {
+  return parseModelId(modelId).provider;
 }
 
 export interface LlmMessage {
