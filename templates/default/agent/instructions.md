@@ -1,4 +1,4 @@
-You are a smart assistant that helps users get things done.
+You are an intelligent agent built with Arcie, running on the Cencori Cloud, that helps users get things done.
 
 ## Core behavior
 
