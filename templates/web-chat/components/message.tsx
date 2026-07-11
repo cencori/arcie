@@ -3,7 +3,7 @@
 import * as React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AlertTriangle, Check, Copy, RotateCcw } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { UiMessage } from "@/lib/types";
 import { ToolCall } from "@/components/tool-call";
@@ -20,6 +20,21 @@ interface MessageProps {
 export function Message({ message, isLast, onCopy, onRegenerate, onApprove, onDeny }: MessageProps) {
   const isUser = message.role === "user";
   const [copied, setCopied] = React.useState(false);
+  const [toolCallsOpen, setToolCallsOpen] = React.useState(false);
+
+  const hasRunningToolCalls =
+    message.toolCalls?.some((c) => c.status === "running" || c.status === "approval") ?? false;
+  const hasToolCalls = (message.toolCalls?.length ?? 0) > 0;
+  const isThinking = message.streaming && message.content.length === 0 && (!hasToolCalls || hasRunningToolCalls);
+
+  const toolSummary = React.useMemo(() => {
+    if (!hasToolCalls) return null;
+    const names = [...new Set(message.toolCalls!.map((c) => c.name))];
+    const rest = message.toolCalls!.length - names.length;
+    let label = names.join(", ");
+    if (rest > 0) label += ` (${message.toolCalls!.length} calls)`;
+    return label;
+  }, [message.toolCalls, hasToolCalls]);
 
   const handleCopy = () => {
     if (onCopy === undefined) return;
@@ -59,7 +74,7 @@ export function Message({ message, isLast, onCopy, onRegenerate, onApprove, onDe
           </details>
         )}
 
-        {message.streaming && message.content.length === 0 && !message.toolCalls?.length ? (
+        {isThinking ? (
           <span className="inline-flex items-center gap-[3px]">
             <span
               className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-bounce"
@@ -90,11 +105,32 @@ export function Message({ message, isLast, onCopy, onRegenerate, onApprove, onDe
           )
         )}
 
-        {message.toolCalls && message.toolCalls.length > 0 && (
+        {hasToolCalls && !isThinking && (
           <div className="flex flex-col gap-1.5">
-            {message.toolCalls.map((call) => (
-              <ToolCall key={call.callId} call={call} onApprove={onApprove} onDeny={onDeny} />
-            ))}
+            {!toolCallsOpen ? (
+              <button
+                type="button"
+                onClick={() => setToolCallsOpen(true)}
+                className="flex items-center gap-1.5 text-xs text-muted-foreground/50 hover:text-muted-foreground transition-colors w-fit"
+              >
+                <ChevronRight className="h-3 w-3" />
+                <span>used {toolSummary}</span>
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setToolCallsOpen(false)}
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground/50 hover:text-muted-foreground transition-colors w-fit mb-1"
+                >
+                  <ChevronDown className="h-3 w-3" />
+                  <span>used {toolSummary}</span>
+                </button>
+                {message.toolCalls!.map((call) => (
+                  <ToolCall key={call.callId} call={call} onApprove={onApprove} onDeny={onDeny} />
+                ))}
+              </>
+            )}
           </div>
         )}
 
