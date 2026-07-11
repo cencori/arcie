@@ -127,7 +127,7 @@ function updateAgentName(dir: string, name: string): void {
   const agentPath = join(dir, "agent", "agent.ts");
   if (!existsSync(agentPath)) return;
   const content = readFileSync(agentPath, "utf-8");
-  const updated = content.replace(/name:\s*"my-agent"/, `name: "${name}"`);
+  const updated = content.replace(/name:\s*"arcie-starter"/, `name: "${name}"`);
   if (updated !== content) writeFileSync(agentPath, updated);
 }
 
