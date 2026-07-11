@@ -16,7 +16,7 @@ export async function GET() {
   const agents = await Promise.all(
     discovered.map(async ({ id }) => {
       try {
-        const loaded = await loadAgentById(AGENT_DIR, id, { hotReload: true });
+        const loaded = await loadAgentById(AGENT_DIR, id, {});
         const { config } = loaded.manifest;
         return {
           id,

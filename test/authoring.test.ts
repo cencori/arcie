@@ -54,10 +54,10 @@ describe("toModelOutput", () => {
       execute: () => 0,
     });
     const out = toModelOutput("add", tool);
-    expect(out.name).toBe("add");
-    expect(out.description).toBe("Add numbers");
     expect(out.type).toBe("function");
-    expect(out.input_schema).toBeDefined();
+    expect(out.function.name).toBe("add");
+    expect(out.function.description).toBe("Add numbers");
+    expect(out.function.parameters).toBeDefined();
     expect((out as any).execute).toBeUndefined();
     expect((out as any).needsApproval).toBeUndefined();
   });

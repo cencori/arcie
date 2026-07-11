@@ -9,12 +9,32 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { resolve, join, dirname } from "node:path";
+import { resolve, join, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { exec } from "node:child_process";
 import { createTuiPrompter } from "./setup/tui-prompter";
 import type { Prompter } from "./setup/prompter";
 import { scaffoldWebChat } from "./scaffold-web-chat";
+
+interface ToolEntry {
+  id: string;
+  label: string;
+  description: string;
+  files: string[];
+  needsApiKey?: string;
+}
+
+const AVAILABLE_TOOLS: ToolEntry[] = [
+  { id: "web_search", label: "web_search", description: "Web search via Tavily (set TAVILY_API_KEY, free tier: 1000 queries/mo)", files: ["agent/tools/web_search.ts"] },
+  { id: "fetch_url", label: "fetch_url", description: "Fetch one or more URLs and extract readable text", files: ["agent/tools/fetch_url.ts"] },
+  { id: "calculator", label: "calculator", description: "Math expressions, unit conversions, trigonometry", files: ["agent/tools/calculator.ts"] },
+  { id: "current_time", label: "current_time", description: "Current date/time for any IANA timezone", files: ["agent/tools/current_time.ts"] },
+  { id: "file_reader", label: "file_reader", description: "Read project files, list directories", files: ["agent/tools/file_reader.ts"] },
+  { id: "grep", label: "grep", description: "Search file contents with regex patterns", files: ["agent/tools/grep.ts"] },
+  { id: "search_docs", label: "search_docs", description: "Search arcie/Cencori documentation", files: ["agent/tools/search_docs.ts"] },
+  { id: "memory_query", label: "memory_query", description: "Store and retrieve persistent user facts", files: ["agent/tools/memory_query.ts"] },
+  { id: "researcher", label: "researcher (subagent)", description: "Deep research specialist subagent", files: ["agent/subagents/researcher/agent.ts", "agent/subagents/researcher/instructions.md", "agent/subagents/researcher/tools/lookup.ts"] },
+];
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -272,6 +292,11 @@ async function runInit(
     scaffold.stop({ kind: "success", message: `Created ${targetDir}` });
   }
 
+  // Let the user choose which tools to keep (skip in resume mode — already set up).
+  if (needsScaffold) {
+    await selectTools(prompter, targetDir);
+  }
+
   // Always scaffold the web channel — it's the default UI users chat with.
   try {
     const webChat = scaffoldWebChat(targetDir);
@@ -310,21 +335,8 @@ async function runInit(
     }
   }
 
-  // Optional API key. Skip freely — dev still starts, first message
-  // will error with a friendly "add CENCORI_API_KEY to .env.local".
-  if (detectEnvKey() === null) {
-    const key = await prompter.text({
-      message: "Paste your CENCORI_API_KEY (or Enter to skip and add later)",
-      mask: true,
-    });
-    if (key !== undefined && key.length > 0) {
-      uncommentEnvLine(join(targetDir, ".env.local"), "CENCORI_API_KEY", key);
-      process.env.CENCORI_API_KEY = key;
-      prompter.log.success("Wrote CENCORI_API_KEY to .env.local");
-    } else {
-      prompter.log.info(`Add later: echo 'CENCORI_API_KEY=...' >> ${join(targetDir, ".env.local")}`);
-    }
-  }
+  // Tell the user about .env.local — they add their own API keys.
+  prompter.log.info(`Edit .env.local to add your API keys (CENCORI_API_KEY, TAVILY_API_KEY, etc.)`);
 
   // Load .env.local so devCommand starts with the vars already in process.env.
   loadEnvFile(join(targetDir, ".env.local"));
@@ -340,6 +352,66 @@ async function runInit(
     port: "3000",
     input: false,
   });
+}
+
+function removeToolFiles(targetDir: string, tool: ToolEntry): void {
+  for (const file of tool.files) {
+    const fullPath = resolve(targetDir, file);
+    try { rmSync(fullPath, { recursive: true, force: true }); } catch { /* skip */ }
+  }
+  // Clean up empty subagent tool directories
+  const subagentToolsDir = resolve(targetDir, "agent/subagents/researcher/tools");
+  try {
+    const remaining = readdirSync(subagentToolsDir).filter((e) => e !== ".gitkeep");
+    if (remaining.length === 0) rmSync(subagentToolsDir, { recursive: true, force: true });
+  } catch { /* skip */ }
+  // Clean up empty subagent directories
+  const subagentDir = resolve(targetDir, "agent/subagents/researcher");
+  try {
+    const remaining = readdirSync(subagentDir).filter((e) => e !== ".gitkeep");
+    if (remaining.length === 0) rmSync(subagentDir, { recursive: true, force: true });
+  } catch { /* skip */ }
+}
+
+async function selectTools(
+  prompter: Prompter,
+  targetDir: string,
+): Promise<void> {
+  const choice = await prompter.select({
+    message: "Which tools would you like to include?",
+    options: [
+      { value: "full", label: "All tools (recommended)", description: "web_search, fetch_url, calculator, grep, file_reader, current_time, search_docs, memory_query + researcher subagent" },
+      { value: "minimal", label: "Minimal", description: "Only calculator + file_reader" },
+      { value: "custom", label: "Choose individually", description: "Pick each tool you want" },
+    ],
+  });
+
+  const selected = new Set<string>();
+
+  if (choice === "full" || choice === undefined) {
+    for (const tool of AVAILABLE_TOOLS) selected.add(tool.id);
+  } else if (choice === "minimal") {
+    selected.add("calculator");
+    selected.add("file_reader");
+  } else if (choice === "custom") {
+    for (const tool of AVAILABLE_TOOLS) {
+      const include = await prompter.select({
+        message: `Include ${tool.label}?`,
+        options: [
+          { value: true, label: `Yes${tool.needsApiKey ? ` (needs ${tool.needsApiKey})` : ""}`, description: tool.description },
+          { value: false, label: "No" },
+        ],
+      });
+      if (include) selected.add(tool.id);
+    }
+  }
+
+  // Remove unselected tools
+  for (const tool of AVAILABLE_TOOLS) {
+    if (!selected.has(tool.id)) {
+      removeToolFiles(targetDir, tool);
+    }
+  }
 }
 
 function loadEnvFile(path: string): void {

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { loadAgent, loadAgentById, type LoadedAgent } from "../loader";
 import { toModelOutput } from "../tools/index";
 import { Memory } from "../memory/index";
-import type { TurnContext, ToolCallContext, ApprovalStrategy, ToolConfig } from "../types";
+import type { TurnContext, ToolCallContext, ApprovalStrategy, ToolConfig, HookEvent, HookPayload } from "../types";
 import {
   createSessionStarted, createTurnStarted, createMessageReceived,
   createMessageAppended, createMessageCompleted, createStepStarted,
@@ -42,6 +42,74 @@ function readArcieVersion(): string {
 }
 
 const ARCIE_VERSION = readArcieVersion();
+
+type RunHooksFn = (event: HookEvent, payload: HookPayload) => Promise<void>;
+
+function isToolBlocked(toolName: string, policy: import("../types").PolicyConfig | undefined): boolean {
+  return !!policy?.blockedTools?.some(
+    (blocked) => blocked === toolName || (blocked.endsWith("*") && toolName.startsWith(blocked.slice(0, -1)))
+  );
+}
+
+function isModelAllowed(model: string, policy: import("../types").PolicyConfig | undefined): boolean {
+  if (!policy?.allowedModels || policy.allowedModels.length === 0) return true;
+  return policy.allowedModels.some(
+    (allowed) => allowed === model || (allowed.endsWith("*") && model.startsWith(allowed.slice(0, -1)))
+  );
+}
+
+const GUARD_PATTERNS: Record<string, RegExp> = {
+  "no-email": /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/,
+  "no-phone": /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/,
+  "no-ssn": /\b\d{3}-\d{2}-\d{4}\b/,
+  "no-url": /https?:\/\/[^\s]+/,
+  "no-code": /```[\s\S]*?```/,
+};
+
+function checkGuards(text: string, guards: string[] | undefined, direction: "input" | "output"): string | null {
+  if (!guards || guards.length === 0) return null;
+  for (const guard of guards) {
+    const pattern = GUARD_PATTERNS[guard];
+    if (pattern && pattern.test(text)) {
+      return `Policy violation: ${guard} guard triggered on ${direction}`;
+    }
+    const maxLenMatch = guard.match(/^max-length:(\d+)$/);
+    if (maxLenMatch) {
+      const maxLen = parseInt(maxLenMatch[1], 10);
+      if (text.length > maxLen) {
+        return `Policy violation: ${direction} exceeds max length of ${maxLen} (${text.length} chars)`;
+      }
+    }
+    if (guard.startsWith("contains:")) {
+      const required = guard.slice(9);
+      if (!text.includes(required)) {
+        return `Policy violation: ${direction} must contain "${required}"`;
+      }
+    }
+  }
+  return null;
+}
+
+function createHookRunner(hooks: Record<string, import("../types").HookConfig>): RunHooksFn {
+  const byEvent = new Map<HookEvent, import("../types").HookConfig[]>();
+  for (const hook of Object.values(hooks)) {
+    if (!hook.event) continue;
+    const list = byEvent.get(hook.event) ?? [];
+    list.push(hook);
+    byEvent.set(hook.event, list);
+  }
+  return async (event: HookEvent, payload: HookPayload) => {
+    const list = byEvent.get(event);
+    if (!list) return;
+    for (const hook of list) {
+      try {
+        await hook.handler(payload);
+      } catch (err) {
+        console.warn(`[arcie] Hook "${hook.name}" failed:`, err);
+      }
+    }
+  };
+}
 
 export interface RunOptions {
   endpoint?: string;
@@ -263,7 +331,7 @@ export async function runAgent(
 
   const sessionId = options.sessionId || await createSession(endpoint, apiKey, agent);
 
-  for await (const event of streamAgent(agentDir, input, { ...options, sessionId, endpoint, apiKey })) {
+  for await (const event of streamLoadedAgent(agent, input, { ...options, sessionId, endpoint, apiKey })) {
     events.push(event);
     options.onEvent?.(event);
     if (event.type === "message.completed" && event.data.text) {
@@ -464,6 +532,7 @@ type ToolExecutionContext = {
   apiKey: string;
   turnId: string;
   bypassApproval: boolean;
+  runHooks: RunHooksFn;
 };
 
 /**
@@ -477,7 +546,7 @@ async function* executeToolCalls(
   calls: PendingToolCall[],
   ctx: ToolExecutionContext,
 ): AsyncGenerator<StreamEvent, ToolBatchOutcome, unknown> {
-  const { agent, memoryTools, approvedTools, allToolCalls, endpoint, apiKey, turnId } = ctx;
+  const { agent, memoryTools, approvedTools, allToolCalls, endpoint, apiKey, turnId, runHooks } = ctx;
   const toolResults: Array<{ action_id: string; output: string }> = [];
   let needsUserApproval = false;
 
@@ -495,6 +564,15 @@ async function* executeToolCalls(
       continue;
     }
 
+    if (isToolBlocked(tc.name, agent.manifest.policy)) {
+      const msg = `Tool "${tc.name}" is blocked by policy.`;
+      yield createToolCallCompleted(tc.name, msg, tc.actionId, "rejected",
+        { code: "blocked_by_policy", message: msg }, 1, 0, turnId);
+      toolResults.push({ action_id: tc.actionId, output: msg });
+      allToolCalls.push({ tool: tc.name, input: tc.args, output: msg });
+      continue;
+    }
+
     if (!ctx.bypassApproval && (strategy === "always" || (strategy === "once" && !approvedTools.has(tc.name)))) {
       needsUserApproval = true;
       yield createToolCallCompleted(tc.name, null, tc.actionId, "pending",
@@ -505,20 +583,27 @@ async function* executeToolCalls(
     if (strategy === "once") approvedTools.add(tc.name);
 
     if (toolDef?.execute) {
+      const start = Date.now();
+      await runHooks("beforeToolCall", { toolCall: { tool: tc.name, input: tc.args } });
       try {
         const output = await toolDef.execute(tc.args);
         const outputStr = typeof output === "string" ? output : JSON.stringify(output);
         yield createToolCallCompleted(tc.name, outputStr, tc.actionId, "completed", undefined, 1, 0, turnId);
         toolResults.push({ action_id: tc.actionId, output: outputStr });
         allToolCalls.push({ tool: tc.name, input: tc.args, output });
+        await runHooks("afterToolCall", { toolCall: { tool: tc.name, input: tc.args, output, durationMs: Date.now() - start } });
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Tool execution failed";
+        const error = err instanceof Error ? err : new Error(msg);
         yield createToolCallCompleted(tc.name, msg, tc.actionId, "failed", { code: "execution_error", message: msg }, 1, 0, turnId);
         toolResults.push({ action_id: tc.actionId, output: `Error: ${msg}` });
         allToolCalls.push({ tool: tc.name, input: tc.args, output: `Error: ${msg}` });
+        await runHooks("afterToolCall", { toolCall: { tool: tc.name, input: tc.args, error, durationMs: Date.now() - start } });
       }
     } else if (subDef) {
       const callId = tc.actionId;
+      const start = Date.now();
+      await runHooks("beforeToolCall", { toolCall: { tool: tc.name, input: tc.args } });
       try {
         const childSessionId = await createChildSession(endpoint, apiKey, agent, tc.name);
         yield createSubagentCalled(tc.name, callId, childSessionId, turnId);
@@ -527,12 +612,15 @@ async function* executeToolCalls(
         yield createToolCallCompleted(tc.name, output, tc.actionId, "completed", undefined, 1, 0, turnId);
         toolResults.push({ action_id: tc.actionId, output });
         allToolCalls.push({ tool: tc.name, input: tc.args, output });
+        await runHooks("afterToolCall", { toolCall: { tool: tc.name, input: tc.args, output, durationMs: Date.now() - start } });
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Subagent execution failed";
+        const error = err instanceof Error ? err : new Error(msg);
         yield createSubagentCompleted(tc.name, callId, `Error: ${msg}`);
         yield createToolCallCompleted(tc.name, msg, tc.actionId, "failed", { code: "execution_error", message: msg }, 1, 0, turnId);
         toolResults.push({ action_id: tc.actionId, output: `Error: ${msg}` });
         allToolCalls.push({ tool: tc.name, input: tc.args, output: `Error: ${msg}` });
+        await runHooks("afterToolCall", { toolCall: { tool: tc.name, input: tc.args, error, durationMs: Date.now() - start } });
       }
     } else {
       yield createToolCallCompleted(tc.name, "Tool not found in agent manifest", tc.actionId, "failed", { code: "tool_not_found", message: `Tool "${tc.name}" not defined in agent` }, 1, 0, turnId);
@@ -556,6 +644,15 @@ export async function* streamAgent(
     options.agentId !== undefined && options.agentId !== "agent"
       ? await loadAgentById(agentDir, options.agentId, loadOpts)
       : await loadAgent(agentDir, loadOpts);
+  yield* streamLoadedAgent(agent, input, options);
+}
+
+/** Internal entry point that works directly on a LoadedAgent without filesystem loading. */
+export async function* streamLoadedAgent(
+  agent: LoadedAgent,
+  input: string,
+  options: RunOptions = {},
+): AsyncGenerator<StreamEvent, void, unknown> {
   const endpoint = options.endpoint || process.env.CENCORI_API_URL || DEFAULT_ENDPOINT;
   const apiKey = options.apiKey || process.env.CENCORI_API_KEY || "";
 
@@ -565,7 +662,23 @@ export async function* streamAgent(
     );
   }
 
+  const runHooks = createHookRunner(agent.manifest.hooks);
+  await runHooks("onStart", {});
+
+  if (!isModelAllowed(agent.manifest.config.model, agent.manifest.policy)) {
+    throw new Error(
+      `Model "${agent.manifest.config.model}" is not allowed by policy. Allowed: ${agent.manifest.policy?.allowedModels?.join(", ") ?? "none"}`,
+    );
+  }
+
+  const inputViolation = checkGuards(input, agent.manifest.policy?.inputGuards, "input");
+  if (inputViolation) {
+    throw new Error(inputViolation);
+  }
+
   let sessionId = options.sessionId || await createSession(endpoint, apiKey, agent);
+
+  try {
   const model = agent.manifest.config.model;
 
   const memory = agent.manifest.session?.memory
@@ -619,7 +732,7 @@ export async function* streamAgent(
   const allToolCalls: { tool: string; input: unknown; output: unknown }[] = [];
   const execCtx: ToolExecutionContext = {
     agent, memoryTools, approvedTools, allToolCalls,
-    endpoint, apiKey, turnId, bypassApproval: false,
+    endpoint, apiKey, turnId, bypassApproval: false, runHooks,
   };
 
   let response: Response;
@@ -654,6 +767,7 @@ export async function* streamAgent(
       }),
     });
   } else {
+    await runHooks("beforeTurn", { turn: { id: turnId, sessionId, input } });
     const postTurn = (sid: string) =>
       fetch(`${endpoint}/sessions/${sid}/turns`, {
         method: "POST",
@@ -715,6 +829,17 @@ export async function* streamAgent(
       if (memory) {
         await memory.recordTurn(input, result.text, allToolCalls.length > 0 ? allToolCalls : undefined);
       }
+      await runHooks("afterTurn", {
+        turn: { id: turnId, sessionId, input, output: result.text, toolCalls: allToolCalls.map(tc => ({ tool: tc.tool, input: tc.input, output: tc.output })) }
+      });
+      const outputViolation = checkGuards(result.text, agent.manifest.policy?.outputGuards, "output");
+      if (outputViolation) {
+        yield createMessageCompleted(result.text, "error", 1, 0, turnId);
+        yield createStepCompleted("error", 1, 0, turnId);
+        yield createTurnCompleted(1, turnId);
+        yield createSessionCompleted();
+        throw new Error(outputViolation);
+      }
       break;
     }
 
@@ -758,4 +883,11 @@ export async function* streamAgent(
   }
 
   yield createSessionWaiting();
+  } catch (_err) {
+    const _hookErr = _err instanceof Error ? _err : new Error(String(_err));
+    await runHooks("onError", { error: _hookErr });
+    throw _err;
+  } finally {
+    await runHooks("onEnd", {});
+  }
 }

@@ -172,7 +172,7 @@ function describeEngine(engine: EngineChoice): string {
       return process.env.CENCORI_API_URL!;
     case "cloud":
     case "cloud-unreachable":
-      return `cencori cloud (cencori.com/api/v1)`;
+      return `cencori cloud`;
     case "failover":
       return `local (${engine.provider} direct) ${grey("\xB7")} cloud failover`;
     case "local":
@@ -398,7 +398,7 @@ export async function devCommand(options: DevOptions): Promise<void> {
         engine.mode = "cloud";
       }
     }
-    console.log(`  ${dimmed(`engine ${describeEngine(engine)}`)}`);
+    console.log(`  ${dimmed(`engine ${grey("\xB7")} ${describeEngine(engine)}`)}`);
     if (engine.mode === "failover") {
       console.log(`  ${grey("!")} cencori.com unreachable ${grey("\xB7")} failing over to local ${engine.provider} until it's back`);
     }
@@ -554,7 +554,7 @@ export async function devCommand(options: DevOptions): Promise<void> {
   if (!process.env.CENCORI_API_URL && (jsonEngine.mode === "local" || jsonEngine.mode === "failover")) {
     process.env.CENCORI_API_URL = `http://127.0.0.1:${boundPort}/v1`;
   }
-  console.log(`  ${dimmed(`engine ${describeEngine(jsonEngine)}`)}`);
+  console.log(`  ${dimmed(`engine ${grey("\xB7")} ${describeEngine(jsonEngine)}`)}`);
   if (jsonEngine.mode === "failover") {
     console.log(`  ${grey("!")} cencori.com unreachable ${grey("\xB7")} failing over to local ${jsonEngine.provider} until it's back`);
   }

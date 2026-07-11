@@ -1,11 +1,12 @@
-export { defineAgent } from "./agent/index";
+export { defineAgent, createAgent, Agent } from "./agent/index";
 export { defineInstructions, loadInstructions } from "./instructions/index";
 export { defineTool, toModelOutput } from "./tools/index";
 export { defineSkill, getSkill } from "./skills/index";
 export { defineHook } from "./hooks/index";
 export { defineChannel, POST, GET } from "./channels/index";
 export { defineConnection } from "./connections/index";
-export { defineSchedule } from "./schedules/index";
+export { defineSchedule, startScheduler, cronMatches } from "./schedules/index";
+export type { SchedulerHandle, SchedulerOptions } from "./schedules/index";
 export { getSession, setSession, getTurn, setTurn, getContext, requireContext, hasContext, setContext, ensureContext } from "./context/index";
 export { Memory, InMemoryStore, SqliteStore, FileStore, CencoriMemoryStore, LastNStrategy, KeyFactsStrategy, SummaryStrategy, SemanticRecall, WorkingMemory, DEFAULT_TEMPLATE, WORKING_MEMORY_SYSTEM_INSTRUCTION } from "./memory/index";
 export type { MemoryStore, MemoryEntry, MemoryQuery, MemoryStrategy, CencoriMemoryClient, SummarizeFn } from "./memory/index";
