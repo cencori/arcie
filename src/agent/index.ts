@@ -47,7 +47,11 @@ class Agent {
   async execute(name: string, input: unknown): Promise<unknown> {
     const tool = this.config.tools?.[name];
     if (!tool) throw new Error(`Tool "${name}" not found on agent`);
-    return tool.execute(input);
+    let output = await tool.execute(input);
+    if (tool.outputSchema) {
+      output = tool.outputSchema.parse(output);
+    }
+    return output;
   }
 
   getTools(): Record<string, ToolConfig> {

@@ -2,7 +2,7 @@
 
 The electronic line — build agents at the speed of light.
 
-> Site: [cencori.com/arcie](https://cencori.com/arcie) &middot; Docs: [cencori.com/arcie/docs](https://cencori.com/arcie/docs)
+> Site: [cencori.com/arcie](https://cencori.com/arcie) · Docs: [cencori.com/arcie/docs](https://cencori.com/arcie/docs)
 
 ```
 npx arcie@latest init my-agent
@@ -11,15 +11,16 @@ npx arcie@latest init my-agent
 ```
 my-agent/
 ├── agent/
-│   ├── agent.ts           # model + Cencori config
+│   ├── agent.ts           # model + config
 │   ├── instructions.md    # system prompt
 │   ├── tools/             # what it can do
 │   ├── knowledge/         # what it knows
 │   ├── subagents/         # who it delegates to
-│   ├── channels/          # where it lives (HTTP, Slack, etc.)
-│   ├── schedules/         # when it acts on its own
-│   ├── sessions/          # durable execution policies
-│   └── policies/          # security, budgets, guardrails
+│   ├── channels/          # HTTP, Slack, WhatsApp
+│   ├── schedules/         # recurring jobs
+│   ├── sessions/          # memory + session config
+│   └── policies/          # guardrails, budgets, security
+├── web/                   # chat UI (Next.js)
 ├── package.json
 └── tsconfig.json
 ```
@@ -31,6 +32,8 @@ npx arcie@latest init my-agent
 cd my-agent
 npm run dev
 ```
+
+Opens a web chat UI at `http://localhost:5173`.
 
 ## Authoring
 
@@ -61,33 +64,62 @@ export default defineTool({
 });
 ```
 
+## Programmatic API
+
+```ts
+import { createAgent } from "arcie";
+
+const agent = createAgent({
+  model: "gpt-4o",
+  tools: {
+    greet: {
+      description: "Greet someone",
+      execute: ({ name }) => `Hello, ${name}!`,
+    },
+  },
+});
+
+const reply = await agent.generate("Say hi to Alice");
+```
+
 ## Subagents
 
-Drop a specialist under `agent/subagents/<id>/` and the orchestrator can delegate
-a focused subtask to it. Each subagent is a full agent with its own instructions
-and tools, and **must declare a `description`** so the model knows when to use it.
+Drop a specialist under `agent/subagents/<id>/`:
 
 ```
 agent/subagents/researcher/
-├── agent.ts          # defineAgent({ model, description })  ← description required
+├── agent.ts          # defineAgent({ model, description })
 ├── instructions.md   # optional
-└── tools/            # optional — the subagent's own tools
+└── tools/            # optional
+```
+
+Each subagent runs in a **fresh, isolated session** — the parent never sees the child's history. See [docs/subagents.md](docs/subagents.md).
+
+## Memory & Policies
+
+```ts
+// agent/sessions/config.ts
+export default {
+  maxTurns: 50,
+  memory: { strategy: "lastN", limit: 20, workingMemory: true },
+};
 ```
 
 ```ts
-// agent/subagents/researcher/agent.ts
-import { defineAgent } from "arcie";
-
-export default defineAgent({
-  model: "claude-sonnet-4-5",
-  description: "Investigate ambiguous questions before the parent agent responds.",
-});
+// agent/policies/index.ts
+export default {
+  inputGuards: ["no-email", "no-phone"],
+  blockedTools: ["dangerous_tool"],
+  allowedModels: ["claude-*", "gpt-4*"],
+};
 ```
 
-The orchestrator sees each subagent as a tool it can call with a `message` (plus an
-optional `outputSchema` for structured results). Every call runs in a **fresh,
-isolated session** — the subagent never inherits the parent's history, so the main
-agent's context stays lean. See [docs/subagents.md](docs/subagents.md).
+## Docs
+
+- [Getting Started](docs/getting-started.md)
+- [API Reference](docs/api-reference.md)
+- [Project Layout](docs/project-layout.md)
+- [Subagents](docs/subagents.md)
 
 ## License
 

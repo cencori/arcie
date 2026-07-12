@@ -21,6 +21,7 @@ export default defineConfig({
     "memory/index": "src/memory/index.ts",
     "connections/index": "src/connections/index.ts",
     "server/index": "src/server/index.ts",
+    "evals/index": "src/evals/index.ts",
   },
   format: ["esm"],
   target: "es2022",

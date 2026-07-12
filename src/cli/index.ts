@@ -94,35 +94,82 @@ function createCliProgram(logger: CliLogger): Command {
 
   channels
     .command("add <kind>")
-    .description("Scaffold a channel (currently supports: web).")
+    .description("Scaffold a channel (web, slack, discord).")
     .option("--agent-dir <path>", "Path to agent directory", ".")
     .action(async (kind: string, options: { agentDir: string }) => {
-      if (kind !== "web") {
-        logger.error(`unknown channel kind: ${kind}. supported: web`);
+      const agentDir = resolvePath(process.cwd(), options.agentDir);
+      const SUPPORTED = new Set(["web", "slack", "discord"]);
+
+      if (!SUPPORTED.has(kind)) {
+        logger.error(`unknown channel kind: ${kind}. supported: ${[...SUPPORTED].join(", ")}`);
         process.exit(1);
       }
-      const agentDir = resolvePath(process.cwd(), options.agentDir);
-      const { scaffoldWebChat } = await import("./scaffold-web-chat");
+
       try {
-        const result = scaffoldWebChat(agentDir);
-        if (result.alreadyExisted) {
-          logger.error(`web already exists at ${result.targetPath}`);
-          process.exit(1);
+        if (kind === "web") {
+          const { scaffoldWebChat } = await import("./scaffold-web-chat");
+          const result = scaffoldWebChat(agentDir);
+          if (result.alreadyExisted) {
+            logger.error(`web already exists at ${result.targetPath}`);
+            process.exit(1);
+          }
+          logger.log(
+            renderCliTaggedLine(theme, {
+              message: `scaffolded ${result.targetPath}`,
+              tag: "channels",
+              tone: "success",
+            }),
+          );
+          logger.log(
+            renderCliTaggedLine(theme, {
+              message: "cd into it, then: npm install && cp .env.local.example .env.local && npm run dev",
+              tag: "next",
+              tone: "info",
+            }),
+          );
+        } else if (kind === "slack") {
+          const { scaffoldSlackChannel } = await import("./scaffold-slack");
+          const result = scaffoldSlackChannel(agentDir);
+          if (result.alreadyExisted) {
+            logger.error(`slack channel already exists at ${result.targetPath}`);
+            process.exit(1);
+          }
+          logger.log(
+            renderCliTaggedLine(theme, {
+              message: `scaffolded ${result.targetPath}`,
+              tag: "channels",
+              tone: "success",
+            }),
+          );
+          logger.log(
+            renderCliTaggedLine(theme, {
+              message: "Add SLACK_SIGNING_SECRET and SLACK_BOT_TOKEN to your .env.local",
+              tag: "next",
+              tone: "info",
+            }),
+          );
+        } else if (kind === "discord") {
+          const { scaffoldDiscordChannel } = await import("./scaffold-discord");
+          const result = scaffoldDiscordChannel(agentDir);
+          if (result.alreadyExisted) {
+            logger.error(`discord channel already exists at ${result.targetPath}`);
+            process.exit(1);
+          }
+          logger.log(
+            renderCliTaggedLine(theme, {
+              message: `scaffolded ${result.targetPath}`,
+              tag: "channels",
+              tone: "success",
+            }),
+          );
+          logger.log(
+            renderCliTaggedLine(theme, {
+              message: "Add DISCORD_BOT_TOKEN and DISCORD_PUBLIC_KEY to your .env.local",
+              tag: "next",
+              tone: "info",
+            }),
+          );
         }
-        logger.log(
-          renderCliTaggedLine(theme, {
-            message: `scaffolded ${result.targetPath}`,
-            tag: "channels",
-            tone: "success",
-          }),
-        );
-        logger.log(
-          renderCliTaggedLine(theme, {
-            message: "cd into it, then: npm install && cp .env.local.example .env.local && npm run dev",
-            tag: "next",
-            tone: "info",
-          }),
-        );
       } catch (err) {
         logger.error(err instanceof Error ? err.message : String(err));
         process.exit(1);
@@ -155,6 +202,29 @@ function createCliProgram(logger: CliLogger): Command {
           tone: "success",
         }),
       );
+    });
+
+  program
+    .command("eval")
+    .description("Run agent evals.")
+    .option("--agent-dir <path>", "Path to agent directory", "agent")
+    .option("--url <url>", "Remote target URL for evals")
+    .option("--filter <ids...>", "Filter eval ids to run")
+    .option("--tag <tag>", "Filter evals by tag")
+    .option("--list", "List discovered evals without running")
+    .option("--junit <path>", "Write JUnit XML report to path")
+    .option("--timeout <ms>", "Per-eval timeout in milliseconds", parsePortOption)
+    .action(async (options) => {
+      const { evalCommand } = await import("./eval");
+      await evalCommand({
+        agentDir: options.agentDir,
+        url: options.url,
+        filter: options.filter,
+        tag: options.tag,
+        list: options.list ?? false,
+        junit: options.junit,
+        timeoutMs: options.timeout,
+      });
     });
 
   program
@@ -208,7 +278,7 @@ function createCliProgram(logger: CliLogger): Command {
   return program;
 }
 
-const KNOWN_COMMANDS = new Set(["channels", "init", "build", "dev", "help"]);
+const KNOWN_COMMANDS = new Set(["channels", "init", "build", "dev", "eval", "help"]);
 
 function resolveArgv(argv: readonly string[]): string[] {
   if (argv.length === 0) return ["dev"];

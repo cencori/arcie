@@ -9,6 +9,7 @@ import { showHeader } from "./banner";
 import { grey, dimmed } from "./style";
 import { startBlockChat } from "./tui/renderer/start-block-chat";
 import { handleSessionsRequest, getProviderApiKey, resolveProviderForModel } from "../server/index";
+import { createChannelMiddleware } from "../channels/server";
 
 export interface DevOptions {
   port: string;
@@ -368,11 +369,13 @@ export async function devCommand(options: DevOptions): Promise<void> {
   let modelLine = agentDirPath;
   let missingKeys: string[] = [];
   let agentModel = "";
+  let channelMiddleware: ((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => Promise<boolean>) | null = null;
   try {
     const agent = await loadAgent(agentDirPath);
     agentModel = agent.manifest.config.model;
     modelLine = `${agentDirPath} ${grey("\xB7")} ${grey(agent.manifest.config.model)}`;
     missingKeys = checkProviderKeys(agent.manifest.config.model);
+    channelMiddleware = createChannelMiddleware(agent.manifest.channels);
   } catch {
     /* fall through — dev still runs, /api/chat will error clearly */
   }
@@ -504,6 +507,8 @@ export async function devCommand(options: DevOptions): Promise<void> {
 
   const server = createServer(async (req, res) => {
     if (await handleSessionsRequest(req, res)) return;
+
+    if (channelMiddleware && await channelMiddleware(req, res)) return;
 
     const method = req.method ?? "GET";
     const url = req.url ?? "/";

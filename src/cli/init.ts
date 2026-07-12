@@ -33,6 +33,12 @@ const AVAILABLE_TOOLS: ToolEntry[] = [
   { id: "grep", label: "grep", description: "Search file contents with regex patterns", files: ["agent/tools/grep.ts"] },
   { id: "search_docs", label: "search_docs", description: "Search arcie/Cencori documentation", files: ["agent/tools/search_docs.ts"] },
   { id: "memory_query", label: "memory_query", description: "Store and retrieve persistent user facts", files: ["agent/tools/memory_query.ts"] },
+  { id: "vision_analyze", label: "vision_analyze", description: "Analyze images with custom questions via Cencori Vision", files: ["agent/tools/vision_analyze.ts"] },
+  { id: "vision_ocr", label: "vision_ocr", description: "Extract text from images via Cencori OCR", files: ["agent/tools/vision_ocr.ts"] },
+  { id: "vision_classify", label: "vision_classify", description: "Classify images into tags, categories, objects", files: ["agent/tools/vision_classify.ts"] },
+  { id: "document_extract", label: "document_extract", description: "Extract text from PDFs and images", files: ["agent/tools/document_extract.ts"] },
+  { id: "document_summarize", label: "document_summarize", description: "Summarize PDFs and image documents", files: ["agent/tools/document_summarize.ts"] },
+  { id: "document_query", label: "document_query", description: "Ask questions about PDF and image documents", files: ["agent/tools/document_query.ts"] },
   { id: "researcher", label: "researcher (subagent)", description: "Deep research specialist subagent", files: ["agent/subagents/researcher/agent.ts", "agent/subagents/researcher/instructions.md", "agent/subagents/researcher/tools/lookup.ts"] },
 ];
 
@@ -380,7 +386,7 @@ async function selectTools(
   const choice = await prompter.select({
     message: "Which tools would you like to include?",
     options: [
-      { value: "full", label: "All tools (recommended)", description: "web_search, fetch_url, calculator, grep, file_reader, current_time, search_docs, memory_query + researcher subagent" },
+      { value: "full", label: "All tools (recommended)", description: "web_search, fetch_url, calculator, grep, file_reader, current_time, search_docs, memory_query, vision_analyze, vision_ocr, vision_classify, document_extract, document_summarize, document_query + researcher subagent" },
       { value: "minimal", label: "Minimal", description: "Only calculator + file_reader" },
       { value: "custom", label: "Choose individually", description: "Pick each tool you want" },
     ],

@@ -143,6 +143,12 @@ export interface RunOptions {
    * ignored on a resumed turn.
    */
   resume?: { toolCalls: ResumeToolCall[] };
+  /**
+   * Zod schema for structured output. When set, the agent is instructed
+   * to return valid JSON matching this schema. The final output is
+   * validated and parsed through the schema.
+   */
+  outputSchema?: import("zod").ZodType<unknown>;
 }
 
 export interface ResumeToolCall {
@@ -158,6 +164,8 @@ export interface RunResult {
   turns: TurnContext[];
   events: StreamEvent[];
   sessionId: string;
+  /** Parsed structured output when outputSchema was provided. */
+  parsedOutput?: unknown;
 }
 
 function truncateBody(body: string): string {
@@ -373,6 +381,7 @@ export async function runAgent(
     }],
     events,
     sessionId,
+    parsedOutput: (options as Record<string, unknown>)._parsedOutput,
   };
 }
 
@@ -589,7 +598,11 @@ async function* executeToolCalls(
       const start = Date.now();
       await runHooks("beforeToolCall", { toolCall: { tool: tc.name, input: tc.args } });
       try {
-        const output = await toolDef.execute(tc.args);
+        let output = await toolDef.execute(tc.args);
+        if (toolDef.outputSchema) {
+          const parsed = toolDef.outputSchema.parse(output);
+          output = parsed;
+        }
         const outputStr = typeof output === "string" ? output : JSON.stringify(output);
         yield createToolCallCompleted(tc.name, outputStr, tc.actionId, "completed", undefined, 1, 0, turnId);
         toolResults.push({ action_id: tc.actionId, output: outputStr });
@@ -716,10 +729,14 @@ export async function* streamLoadedAgent(
   ];
   const memoryContext = memory ? await memory.getInputContext() : "";
   const memoryInstruction = memory ? memory.getSystemInstruction() : "";
+  const schemaInstruction = options.outputSchema
+    ? `You must return ONLY valid JSON matching this schema. Do not include any other text, markdown, or explanation outside the JSON object.\n${JSON.stringify(options.outputSchema.description ?? "structured output")}`
+    : "";
   const instructions = [
     agent.manifest.instructions,
     memoryInstruction,
     memoryContext,
+    schemaInstruction,
   ].filter(Boolean).join("\n\n");
 
   yield createSessionStarted(sessionId, {
@@ -830,6 +847,19 @@ export async function* streamLoadedAgent(
     result = iter.value;
 
     if (result.status === "completed") {
+      if (options.outputSchema) {
+        try {
+          const parsed = options.outputSchema.parse(JSON.parse(result.text));
+          (options as Record<string, unknown>)._parsedOutput = parsed;
+        } catch (err) {
+          const msg = `Structured output validation failed: ${err instanceof Error ? err.message : String(err)}`;
+          yield createMessageCompleted(result.text, "error", 1, 0, turnId);
+          yield createStepCompleted("error", 1, 0, turnId);
+          yield createTurnCompleted(1, turnId);
+          yield createSessionCompleted();
+          throw new Error(msg);
+        }
+      }
       if (memory) {
         await memory.recordTurn(input, result.text, allToolCalls.length > 0 ? allToolCalls : undefined);
       }

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://arcie.dev/schema/arcie.json",
+  "framework": "arcie",
+  "version": 1,
+
+  "agent": {
+    "dir": "./agent",
+    "entry": "./agent/agent.ts"
+  },
+
+  "apps": {
+    "web": {
+      "dir": "./web",
+      "framework": "nextjs",
+      "installCommand": "npm install",
+      "buildCommand": "npm run build",
+      "startCommand": "npm start",
+      "env": ["CENCORI_API_KEY", "CENCORI_PROJECT_ID"]
+    }
+  },
+
+  "deploy": {
+    "default": "web",
+    "stage": {
+      "./agent": "./web/agent"
+    }
+  }
+}

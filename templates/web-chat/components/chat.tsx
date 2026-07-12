@@ -4,7 +4,36 @@ import * as React from "react";
 import { InputBar } from "@/components/input-bar";
 import { Message } from "@/components/message";
 import { readArcieStream } from "@/lib/stream";
-import type { AgentInfo, UiMessage, UiToolCall } from "@/lib/types";
+import type { AgentInfo, UiFile, UiMessage, UiToolCall } from "@/lib/types";
+
+function resizeImage(file: File, maxDim: number, quality: number): Promise<UiFile> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        const scale = width > height ? maxDim / width : maxDim / height;
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { reject(new Error("Canvas 2D not available")); return; }
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(img, 0, 0, width, height);
+      const mimeType = file.type === "image/png" ? "image/png" : "image/jpeg";
+      const dataUrl = canvas.toDataURL(mimeType, mimeType === "image/jpeg" ? quality : undefined);
+      resolve({ id: `f-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: file.name, type: mimeType, dataUrl, size: dataUrl.length });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Failed to load image")); };
+    img.src = url;
+  });
+}
 
 function newId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -19,6 +48,9 @@ export function Chat() {
   const sessionRef = React.useRef<string | undefined>(undefined);
   const conversationRef = React.useRef<string>(newId("c"));
   const containerRef = React.useRef<HTMLDivElement>(null);
+  const fileMessageRef = React.useRef<string | undefined>(undefined);
+
+  const [pendingFiles, setPendingFiles] = React.useState<UiFile[]>([]);
 
   React.useEffect(() => {
     const el = containerRef.current;
@@ -68,6 +100,17 @@ export function Chat() {
    * given id. Used for both fresh turns and approval resumes, so tool
    * cards are matched by callId rather than arrival order.
    */
+  const clearFileLoading = React.useCallback(() => {
+    const fileMsgId = fileMessageRef.current;
+    if (fileMsgId !== undefined) {
+      fileMessageRef.current = undefined;
+      patchMessage(fileMsgId, (m) => ({
+        ...m,
+        files: m.files?.map((f) => ({ ...f, loading: false })),
+      }));
+    }
+  }, [patchMessage]);
+
   const streamInto = React.useCallback(
     async (assistantId: string, response: Response) => {
       const patchAssistant = (patch: (prev: UiMessage) => UiMessage) =>
@@ -83,7 +126,13 @@ export function Chat() {
         });
       };
 
+      let firstEvent = true;
+
       for await (const event of readArcieStream(response)) {
+        if (firstEvent) {
+          firstEvent = false;
+          clearFileLoading();
+        }
         switch (event.type) {
           case "session.started": {
             const sid = (event.data as { sessionId?: string }).sessionId;
@@ -184,6 +233,7 @@ export function Chat() {
           signal: controller.signal,
         });
         if (!response.ok) {
+          clearFileLoading();
           const text = await response.text();
           patchMessage(assistantId, (m) => ({
             ...m,
@@ -195,6 +245,7 @@ export function Chat() {
         }
         await streamInto(assistantId, response);
       } catch (error) {
+        clearFileLoading();
         if (!controller.signal.aborted) {
           patchMessage(assistantId, (m) => ({
             ...m,
@@ -204,19 +255,74 @@ export function Chat() {
           }));
         }
       } finally {
+        clearFileLoading();
         const latencyMs = Date.now() - startedAt;
         patchMessage(assistantId, (m) => ({ ...m, streaming: false, latencyMs }));
         setStreaming(false);
         abortRef.current = undefined;
       }
     },
-    [patchMessage, streamInto],
+    [patchMessage, streamInto, clearFileLoading],
   );
+
+  const processFiles = React.useCallback(async (rawFiles: File[]): Promise<UiFile[]> => {
+    const MAX_DIM = 2048;
+    const JPEG_QUALITY = 0.82;
+
+    return Promise.all(
+      rawFiles.map(async (f) => {
+        const id = newId("f");
+        if (!f.type.startsWith("image/")) {
+          const buf = await f.arrayBuffer();
+          const base64 = btoa(new Uint8Array(buf).reduce((s, b) => s + String.fromCodePoint(b), ""));
+          return { id, name: f.name, type: f.type, dataUrl: `data:${f.type};base64,${base64}`, size: f.size };
+        }
+        return resizeImage(f, MAX_DIM, JPEG_QUALITY);
+      }),
+    );
+  }, []);
+
+  const onFilesSelected = React.useCallback((rawFiles: File[]) => {
+    const entries = rawFiles.map((f) => ({
+      id: newId("f"),
+      name: f.name,
+      type: f.type,
+      dataUrl: "",
+      size: f.size,
+      loading: true,
+    }));
+    setPendingFiles((prev) => [...prev, ...entries]);
+
+    for (let i = 0; i < rawFiles.length; i++) {
+      const rawFile = rawFiles[i]!;
+      const entryId = entries[i]!.id;
+      processFiles([rawFile]).then((processed) => {
+        const pf = processed[0]!;
+        setPendingFiles((prev) =>
+          prev.map((p) => (p.id === entryId ? { ...pf, id: entryId, loading: false } : p)),
+        );
+      });
+    }
+  }, [processFiles]);
+
+  const removePendingFile = React.useCallback((fileId: string) => {
+    setPendingFiles((prev) => prev.filter((p) => p.id !== fileId));
+  }, []);
 
   const send = React.useCallback(
     async (text: string, historyOverride?: UiMessage[]) => {
       const base = historyOverride ?? messages;
-      const userMessage: UiMessage = { id: newId("u"), role: "user", content: text };
+      const uiFiles = pendingFiles;
+
+      const userMessageId = newId("u");
+      const userMessage: UiMessage = {
+        id: userMessageId,
+        role: "user",
+        content: text,
+        files: uiFiles.length > 0 ? uiFiles : undefined,
+      };
+      if (uiFiles.length > 0) fileMessageRef.current = userMessageId;
+      setPendingFiles([]);
       const assistantId = newId("a");
       const assistantMessage: UiMessage = {
         id: assistantId,
@@ -230,12 +336,13 @@ export function Chat() {
 
       await runRequest(assistantId, {
         message: text,
+        files: uiFiles.map((f) => ({ name: f.name, type: f.type, dataUrl: f.dataUrl })),
         sessionId: sessionRef.current,
         threadId: conversationRef.current,
         ...(agentId !== "agent" ? { agentId } : {}),
       });
     },
-    [messages, agentId, runRequest],
+    [messages, agentId, runRequest, pendingFiles],
   );
 
   /**
@@ -328,6 +435,9 @@ export function Chat() {
         onClear={clearAll}
         streaming={streaming}
         hasMessages={messages.length > 0}
+        pendingFiles={pendingFiles}
+        onFilesSelected={onFilesSelected}
+        onRemoveFile={removePendingFile}
       />
     </div>
   );

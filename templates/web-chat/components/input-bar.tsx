@@ -3,25 +3,24 @@
 import * as React from "react";
 import { ArrowUp, Mic, Paperclip, Square, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ImagePreview } from "@/components/image-preview";
+import type { UiFile } from "@/lib/types";
 
 interface InputBarProps {
-  onSend(message: string, files?: File[]): void;
+  onSend(message: string): void;
   onStop(): void;
   onClear?(): void;
   streaming: boolean;
   disabled?: boolean;
   hasMessages?: boolean;
-  /** Optional slot rendered on the left of the footer bar (e.g. an agent picker). */
+  /** Files currently being prepared (processing or ready). */
+  pendingFiles: UiFile[];
+  /** Called when the user picks new files from the file picker. */
+  onFilesSelected(files: File[]): void;
+  /** Called when the user removes a pending file. */
+  onRemoveFile(fileId: string): void;
   leftSlot?: React.ReactNode;
-  /**
-   * Called when the user clicks the microphone. Wire this to your STT
-   * pipeline (browser `SpeechRecognition`, Cencori voice API, etc.). When
-   * omitted, the mic renders as a ghost placeholder that does nothing —
-   * useful for reserving the affordance while voice input is still on the
-   * roadmap.
-   */
   onMic?(): void;
-  /** True while STT is actively transcribing; renders the mic in an "on" state. */
   micActive?: boolean;
 }
 
@@ -32,21 +31,23 @@ export function InputBar({
   streaming,
   disabled,
   hasMessages,
+  pendingFiles,
+  onFilesSelected,
+  onRemoveFile,
   leftSlot,
   onMic,
   micActive,
 }: InputBarProps) {
   const [value, setValue] = React.useState("");
-  const [files, setFiles] = React.useState<File[]>([]);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   const submit = () => {
     const trimmed = value.trim();
-    if ((trimmed.length === 0 && files.length === 0) || streaming || disabled) return;
-    onSend(trimmed, files.length > 0 ? files : undefined);
+    if ((trimmed.length === 0 && pendingFiles.length === 0) || streaming || disabled) return;
+    if (pendingFiles.some((f) => f.loading)) return;
+    onSend(trimmed);
     setValue("");
-    setFiles([]);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
@@ -68,11 +69,7 @@ export function InputBar({
   const onFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const next = event.target.files;
     if (next === null) return;
-    setFiles((prev) => [...prev, ...Array.from(next)]);
-  };
-
-  const removeFile = (index: number) => {
-    setFiles((prev) => prev.filter((_, i) => i !== index));
+    onFilesSelected(Array.from(next));
   };
 
   const openFilePicker = () => {
@@ -89,24 +86,15 @@ export function InputBar({
             "focus-within:border-border/25 focus-within:ring-1 focus-within:ring-white/5",
           )}
         >
-          {files.length > 0 && (
+          {pendingFiles.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
-              {files.map((file, index) => (
-                <div
-                  key={`${file.name}-${index}`}
-                  className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-card/60 text-[11px] font-medium text-foreground border border-border/30"
-                >
-                  <Paperclip className="h-3 w-3 text-muted-foreground/70" />
-                  <span className="max-w-[160px] truncate">{file.name}</span>
-                  <button
-                    type="button"
-                    onClick={() => removeFile(index)}
-                    className="text-muted-foreground/50 hover:text-foreground transition-colors"
-                    title="Remove attachment"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
+              {pendingFiles.map((f) => (
+                <ImagePreview
+                  key={f.id}
+                  file={f}
+                  chip
+                  onRemove={f.loading ? undefined : () => onRemoveFile(f.id)}
+                />
               ))}
             </div>
           )}
@@ -138,7 +126,7 @@ export function InputBar({
               <button
                 type="button"
                 onClick={openFilePicker}
-                disabled={streaming}
+                disabled={streaming || pendingFiles.some((f) => f.loading)}
                 className={cn(
                   "h-8 w-8 flex items-center justify-center rounded-full text-muted-foreground/60 transition-colors",
                   "hover:bg-muted/30 hover:text-foreground",
@@ -199,7 +187,7 @@ export function InputBar({
                 <button
                   type="button"
                   onClick={submit}
-                  disabled={(value.trim().length === 0 && files.length === 0) || disabled}
+                  disabled={(value.trim().length === 0 && pendingFiles.length === 0) || disabled || pendingFiles.some((f) => f.loading)}
                   className={cn(
                     "h-8 w-8 flex items-center justify-center rounded-full bg-foreground text-background transition-colors",
                     "hover:bg-foreground/90",

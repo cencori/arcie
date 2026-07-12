@@ -7,6 +7,7 @@ import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, RotateCcw } from
 import { cn } from "@/lib/utils";
 import type { UiMessage } from "@/lib/types";
 import { ToolCall } from "@/components/tool-call";
+import { ImagePreview } from "@/components/image-preview";
 
 interface MessageProps {
   message: UiMessage;
@@ -45,12 +46,21 @@ export function Message({ message, isLast, onCopy, onRegenerate, onApprove, onDe
 
   if (isUser) {
     return (
-      <div className="flex flex-col px-4 items-end">
-        <div className="max-w-[85%] rounded-2xl rounded-tr-sm bg-primary px-3.5 py-2 text-primary-foreground shadow-sm">
-          <p className="text-sm font-medium leading-relaxed whitespace-pre-wrap">
-            {message.content}
-          </p>
-        </div>
+      <div className="flex flex-col px-4 items-end gap-2">
+        {message.files && message.files.length > 0 && (
+          <div className={cn("flex flex-wrap gap-2 justify-end", message.content.length > 0 && "mb-1")}>
+            {message.files.map((file) => (
+              <ImagePreview key={file.id} file={file} />
+            ))}
+          </div>
+        )}
+        {message.content.length > 0 && (
+          <div className="max-w-[85%] rounded-2xl rounded-tr-sm bg-primary px-3.5 py-2 text-primary-foreground shadow-sm">
+            <p className="text-sm font-medium leading-relaxed whitespace-pre-wrap">
+              {message.content}
+            </p>
+          </div>
+        )}
       </div>
     );
   }

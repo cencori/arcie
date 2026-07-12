@@ -1,9 +1,20 @@
 export type ChatRole = "user" | "assistant";
 
+export interface UiFile {
+  id: string;
+  name: string;
+  type: string;
+  /** data URL (base64) for images, or placeholder for other files */
+  dataUrl: string;
+  size: number;
+  loading?: boolean;
+}
+
 export interface UiMessage {
   id: string;
   role: ChatRole;
   content: string;
+  files?: UiFile[];
   toolCalls?: UiToolCall[];
   reasoning?: string;
   streaming?: boolean;

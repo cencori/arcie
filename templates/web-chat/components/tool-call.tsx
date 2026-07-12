@@ -9,6 +9,8 @@ import {
   ChevronRight,
   Copy,
   Check,
+  FileText,
+  ImageIcon,
   Loader2,
   XCircle,
   HelpCircle,
@@ -178,27 +180,7 @@ export function ToolCall({ call, onApprove, onDeny }: ToolCallProps) {
             </div>
           )}
           {(call.output !== undefined && call.status !== "error") && (
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
-                  Output
-                </span>
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); copyJSON("output", call.output); }}
-                  className="flex items-center gap-1 text-[10px] text-muted-foreground/40 hover:text-muted-foreground transition-colors"
-                >
-                  {copied === "output" ? (
-                    <Check className="h-3 w-3 text-emerald-500" />
-                  ) : (
-                    <Copy className="h-3 w-3" />
-                  )}
-                </button>
-              </div>
-              <pre className="overflow-x-auto rounded-lg bg-black/40 p-2.5 text-[10px] leading-relaxed text-muted-foreground/80 font-mono">
-                {formatJSON(call.output)}
-              </pre>
-            </div>
+            <SmartOutput name={call.name} output={call.output} onCopy={(v) => copyJSON("output", v)} />
           )}
           {call.status === "error" && call.errorMessage && (
             <div className="rounded-lg bg-destructive/5 p-2.5 text-[10px] text-destructive font-mono">
@@ -226,4 +208,73 @@ function StatusGlyph({ status }: { status: UiToolCall["status"] }) {
     default:
       return null;
   }
+}
+
+const DOCUMENT_TOOLS = new Set([
+  "document_extract", "document_summarize", "document_query",
+  "vision_analyze", "vision_ocr", "vision_classify",
+]);
+
+const DISPLAY_FIELDS = ["analysis", "text", "summary", "answer", "classification"];
+
+function SmartOutput({ name, output, onCopy: onCopyProp }: { name: string; output: unknown; onCopy: (v: unknown) => void }) {
+  const [copied, setCopied] = React.useState(false);
+
+  if (!DOCUMENT_TOOLS.has(name) || typeof output !== "object" || output === null) {
+    return (
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+            Output
+          </span>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onCopyProp(output); }}
+            className="flex items-center gap-1 text-[10px] text-muted-foreground/40 hover:text-muted-foreground transition-colors"
+          >
+            {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+          </button>
+        </div>
+        <pre className="overflow-x-auto rounded-lg bg-black/40 p-2.5 text-[10px] leading-relaxed text-muted-foreground/80 font-mono">
+          {formatJSON(output)}
+        </pre>
+      </div>
+    );
+  }
+
+  const record = output as Record<string, unknown>;
+  const primary = DISPLAY_FIELDS.find((k) => typeof record[k] === "string" && (record[k] as string).length > 0);
+  const icon = name.startsWith("vision") ? <ImageIcon className="h-3 w-3" /> : <FileText className="h-3 w-3" />;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+          {icon}
+          {name.startsWith("vision") ? "Vision Result" : "Document Result"}
+        </span>
+        <div className="flex items-center gap-2">
+          {typeof record.pageCount === "number" && (
+            <span className="text-[10px] text-muted-foreground/40">{record.pageCount} page{record.pageCount !== 1 ? "s" : ""}</span>
+          )}
+          {typeof record.cost === "number" && (
+            <span className="text-[10px] text-muted-foreground/40">${record.cost.toFixed(6)}</span>
+          )}
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onCopyProp(output); }}
+            className="flex items-center gap-1 text-[10px] text-muted-foreground/40 hover:text-muted-foreground transition-colors"
+          >
+            {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+          </button>
+        </div>
+      </div>
+      {primary && (
+        <div className="rounded-lg bg-muted/10 p-2.5 text-xs leading-relaxed text-foreground/80 whitespace-pre-wrap max-h-48 overflow-y-auto">
+          {String(record[primary]).slice(0, 2000)}
+          {String(record[primary]).length > 2000 && "..."}
+        </div>
+      )}
+    </div>
+  );
 }
