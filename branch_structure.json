@@ -1,0 +1,24 @@
+{
+  "default_branch": "master",
+  "branches": [
+    "master",
+    "origin",
+    "rescue/20644fe",
+    "subagents",
+    "tsup-build-and-tests"
+  ],
+  "parent": {
+    "master": null,
+    "origin": "master",
+    "rescue/20644fe": "master",
+    "subagents": "master",
+    "tsup-build-and-tests": "master"
+  },
+  "order": [
+    "master",
+    "origin",
+    "rescue/20644fe",
+    "subagents",
+    "tsup-build-and-tests"
+  ]
+}
