@@ -2,7 +2,7 @@
   "name": "arcie",
   "type": "module",
   "version": "0.4.6",
-  "description": "The electronic line — build agents at the speed of light.",
+  "description": "The electronic line \u2014 build agents at the speed of light.",
   "bin": {
     "arcie": "dist/cli/index.js"
   },
@@ -49,10 +49,10 @@
     }
   },
   "scripts": {
-    "build": "tsup && npm run build:web && npm run build:ui",
+    "build": "node api.js && tsup && npm run build:web && npm run build:ui",
     "build:web": "node scripts/build-web.mjs",
     "build:ui": "tsup --config tsup.ui.config.ts && node scripts/build-ui-css.mjs",
-    "dev": "tsup --watch",
+    "dev": "node api.js && tsup --watch",
     "typecheck": "tsc -p tsconfig.build.json --noEmit",
     "prepublishOnly": "npm run build",
     "test": "vitest run",
